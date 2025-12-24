@@ -1,0 +1,25 @@
+# Core
+boto3>=1.34.0
+httpx>=0.27.0
+pydantic>=2.5.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.1.0
+passlib>=1.7.4
+
+# Database
+psycopg2-binary>=2.9.9
+asyncpg>=0.29.0
+pymysql>=1.1.0
+sqlalchemy>=2.0.0
+
+# OpenAI embeddings
+openai>=1.12.0
+
+# Chart rendering
+plotly>=5.18.0
+kaleido>=0.2.1
+pandas>=2.1.0
+
+# Utilities
+python-multipart>=0.0.6
+email-validator>=2.1.0
