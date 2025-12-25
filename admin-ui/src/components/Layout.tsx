@@ -1,7 +1,9 @@
 import { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
-import './Layout.css';
+import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { cn } from '@/lib/utils';
 
 interface LayoutProps {
   children: ReactNode;
@@ -18,19 +20,22 @@ export function Layout({ children }: LayoutProps) {
   ];
 
   return (
-    <div className="layout">
-      <nav className="sidebar">
-        <div className="sidebar-header">
-          <h1>Pundit</h1>
-          <span className="sidebar-subtitle">Admin</span>
+    <div className="flex min-h-screen">
+      <nav className="w-60 bg-gray-900 dark:bg-gray-950 text-white flex flex-col fixed top-0 left-0 bottom-0">
+        <div className="p-6 border-b border-white/10">
+          <h1 className="text-2xl font-bold">Pundit</h1>
+          <span className="text-xs text-gray-500 uppercase tracking-wider">Admin</span>
         </div>
 
-        <ul className="nav-list">
+        <ul className="py-4 flex-1">
           {navItems.map((item) => (
             <li key={item.path}>
               <Link
                 to={item.path}
-                className={`nav-link ${location.pathname === item.path ? 'active' : ''}`}
+                className={cn(
+                  "block px-6 py-3 text-gray-300 no-underline transition-colors hover:bg-white/5 hover:text-white",
+                  location.pathname === item.path && "bg-[#e07856]/20 text-[#e07856] border-l-[3px] border-[#e07856]"
+                )}
               >
                 {item.label}
               </Link>
@@ -38,18 +43,21 @@ export function Layout({ children }: LayoutProps) {
           ))}
         </ul>
 
-        <div className="sidebar-footer">
-          <div className="user-info">
-            <span className="user-email">{user?.email}</span>
-            <span className="user-role">{user?.role}</span>
+        <div className="p-4 border-t border-white/10">
+          <div className="mb-3">
+            <span className="block text-sm font-medium truncate">{user?.email}</span>
+            <span className="block text-xs text-gray-500 capitalize">{user?.role}</span>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={logout}>
-            Logout
-          </button>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" className="flex-1" onClick={logout}>
+              Logout
+            </Button>
+            <ThemeToggle />
+          </div>
         </div>
       </nav>
 
-      <main className="main-content">
+      <main className="flex-1 ml-60 p-8 min-h-screen">
         {children}
       </main>
     </div>

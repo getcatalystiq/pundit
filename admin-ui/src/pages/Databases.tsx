@@ -1,7 +1,27 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { databases, Database, CreateDatabaseRequest } from '../api/client';
-import './Databases.css';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { LoadingState } from '@/components/ui/loading';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 export function Databases() {
   const [databaseList, setDatabaseList] = useState<Database[]>([]);
@@ -14,6 +34,13 @@ export function Databases() {
     name: '',
     db_type: 'postgresql',
     is_default: false,
+    connection_config: {
+      host: '',
+      port: 5432,
+      database: '',
+      username: '',
+      password: '',
+    },
   });
 
   useEffect(() => {
@@ -24,7 +51,7 @@ export function Databases() {
     try {
       const response = await databases.list();
       setDatabaseList(response.databases);
-    } catch (err) {
+    } catch {
       setError('Failed to load databases');
     } finally {
       setLoading(false);
@@ -39,7 +66,12 @@ export function Databases() {
     try {
       await databases.create(formData);
       setShowCreate(false);
-      setFormData({ name: '', db_type: 'postgresql', is_default: false });
+      setFormData({
+        name: '',
+        db_type: 'postgresql',
+        is_default: false,
+        connection_config: { host: '', port: 5432, database: '', username: '', password: '' },
+      });
       fetchDatabases();
     } catch (err: unknown) {
       const error = err as { error?: string };
@@ -64,139 +96,224 @@ export function Databases() {
   };
 
   if (loading) {
-    return <div>Loading...</div>;
+    return <LoadingState message="Loading databases..." />;
   }
 
   return (
     <div>
-      <header className="page-header">
-        <h1 className="page-title">Databases</h1>
-        <p className="page-description">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold font-serif text-foreground">Databases</h1>
+        <p className="text-muted-foreground mt-1">
           Manage database connections and training data
         </p>
-        <div className="page-actions">
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+        <div className="flex gap-3 mt-4">
+          <Button onClick={() => setShowCreate(true)}>
             Add Database
-          </button>
+          </Button>
         </div>
       </header>
 
-      {error && <div className="error-banner">{error}</div>}
-
-      {showCreate && (
-        <div className="modal-backdrop" onClick={() => setShowCreate(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Add Database</h2>
-            <form onSubmit={handleCreate}>
-              <div className="form-group">
-                <label className="label">Name</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="label">Database Type</label>
-                <select
-                  className="input"
-                  value={formData.db_type}
-                  onChange={(e) => setFormData({ ...formData, db_type: e.target.value })}
-                >
-                  <option value="postgresql">PostgreSQL</option>
-                  <option value="mysql">MySQL</option>
-                  <option value="snowflake">Snowflake</option>
-                  <option value="bigquery">BigQuery</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.is_default}
-                    onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
-                  />
-                  Set as default database
-                </label>
-              </div>
-
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowCreate(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={creating}>
-                  {creating ? 'Creating...' : 'Create'}
-                </button>
-              </div>
-            </form>
-          </div>
+      {error && (
+        <div className="bg-destructive/10 text-destructive border border-destructive/20 rounded-md p-3 mb-4 text-sm">
+          {error}
         </div>
       )}
 
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Database</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="db_type">Database Type</Label>
+              <select
+                id="db_type"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={formData.db_type}
+                onChange={(e) => {
+                  const dbType = e.target.value;
+                  const defaultPort = dbType === 'postgresql' ? 5432 : dbType === 'mysql' ? 3306 : 5432;
+                  setFormData({
+                    ...formData,
+                    db_type: dbType,
+                    connection_config: { ...formData.connection_config, port: defaultPort },
+                  });
+                }}
+              >
+                <option value="postgresql">PostgreSQL</option>
+                <option value="mysql">MySQL</option>
+                <option value="snowflake">Snowflake</option>
+                <option value="bigquery">BigQuery</option>
+              </select>
+            </div>
+
+            <h3 className="text-sm font-medium pt-2">Connection Details</h3>
+
+            <div className="grid grid-cols-3 gap-4">
+              <div className="col-span-2 space-y-2">
+                <Label htmlFor="host">Host</Label>
+                <Input
+                  id="host"
+                  placeholder="localhost or db.example.com"
+                  value={(formData.connection_config as Record<string, unknown>)?.host as string || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    connection_config: { ...formData.connection_config, host: e.target.value },
+                  })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="port">Port</Label>
+                <Input
+                  id="port"
+                  type="number"
+                  value={(formData.connection_config as Record<string, unknown>)?.port as number || 5432}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    connection_config: { ...formData.connection_config, port: parseInt(e.target.value) || 5432 },
+                  })}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="database">Database Name</Label>
+              <Input
+                id="database"
+                placeholder="mydb"
+                value={(formData.connection_config as Record<string, unknown>)?.database as string || ''}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  connection_config: { ...formData.connection_config, database: e.target.value },
+                })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="username">Username</Label>
+                <Input
+                  id="username"
+                  placeholder="postgres"
+                  value={(formData.connection_config as Record<string, unknown>)?.username as string || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    connection_config: { ...formData.connection_config, username: e.target.value },
+                  })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="••••••••"
+                  value={(formData.connection_config as Record<string, unknown>)?.password as string || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    connection_config: { ...formData.connection_config, password: e.target.value },
+                  })}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                id="is_default"
+                type="checkbox"
+                className="h-4 w-4 rounded border-gray-300"
+                checked={formData.is_default}
+                onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
+              />
+              <Label htmlFor="is_default" className="font-normal">Set as default database</Label>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating}>
+                {creating ? 'Creating...' : 'Create'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {databaseList.length === 0 ? (
-        <div className="empty-state card">
-          <p>No databases configured yet.</p>
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            Add your first database
-          </button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <p className="text-muted-foreground mb-4">No databases configured yet.</p>
+            <Button onClick={() => setShowCreate(true)}>
+              Add your first database
+            </Button>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="card">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Training Data</th>
-                <th>Created</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Training Data</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {databaseList.map((db) => (
-                <tr key={db.id}>
-                  <td>
-                    <Link to={`/databases/${db.id}`} className="db-name">
+                <TableRow key={db.id}>
+                  <TableCell>
+                    <Link to={`/databases/${db.id}`} className="text-primary hover:underline font-medium">
                       {db.name}
-                      {db.is_default && <span className="badge badge-success">Default</span>}
                     </Link>
-                  </td>
-                  <td>{db.db_type}</td>
-                  <td>
-                    <span className={`badge ${db.enabled ? 'badge-success' : 'badge-warning'}`}>
+                    {db.is_default && <Badge variant="success" className="ml-2">Default</Badge>}
+                  </TableCell>
+                  <TableCell>{db.db_type}</TableCell>
+                  <TableCell>
+                    <Badge variant={db.enabled ? 'success' : 'warning'}>
                       {db.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </td>
-                  <td className="training-data">
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
                     {db.training_data ? (
-                      <>
+                      <div className="flex gap-2 text-xs text-muted-foreground">
                         <span title="DDL">{db.training_data.ddl_count} DDL</span>
                         <span title="Documentation">{db.training_data.documentation_count} Docs</span>
                         <span title="Examples">{db.training_data.examples_count} Examples</span>
-                      </>
+                      </div>
                     ) : (
                       '-'
                     )}
-                  </td>
-                  <td>{new Date(db.created_at).toLocaleDateString()}</td>
-                  <td>
-                    <button
-                      className="btn btn-danger btn-sm"
+                  </TableCell>
+                  <TableCell>{new Date(db.created_at).toLocaleDateString()}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="destructive"
+                      size="sm"
                       onClick={() => handleDelete(db.id, db.name)}
                     >
                       Delete
-                    </button>
-                  </td>
-                </tr>
+                    </Button>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </Card>
       )}
     </div>
   );

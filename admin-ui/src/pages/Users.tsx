@@ -1,7 +1,27 @@
 import { useEffect, useState } from 'react';
 import { users, User, CreateUserRequest } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
-import './Databases.css';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { LoadingState } from '@/components/ui/loading';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 export function Users() {
   const { user: currentUser } = useAuth();
@@ -27,7 +47,7 @@ export function Users() {
     try {
       const response = await users.list();
       setUserList(response.users);
-    } catch (err) {
+    } catch {
       setError('Failed to load users');
     } finally {
       setLoading(false);
@@ -91,199 +111,191 @@ export function Users() {
   };
 
   if (loading) {
-    return <div>Loading...</div>;
+    return <LoadingState message="Loading users..." />;
   }
 
   return (
     <div>
-      <header className="page-header">
-        <h1 className="page-title">Users</h1>
-        <p className="page-description">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold font-serif text-foreground">Users</h1>
+        <p className="text-muted-foreground mt-1">
           Manage users in your organization
         </p>
-        <div className="page-actions">
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+        <div className="flex gap-3 mt-4">
+          <Button onClick={() => setShowCreate(true)}>
             Add User
-          </button>
+          </Button>
         </div>
       </header>
 
-      {error && <div className="error-banner">{error}</div>}
-
-      {showCreate && (
-        <div className="modal-backdrop" onClick={() => setShowCreate(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Add User</h2>
-            <form onSubmit={handleCreate}>
-              <div className="form-group">
-                <label className="label">Email</label>
-                <input
-                  type="email"
-                  className="input"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="label">Password</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required
-                  minLength={8}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="label">Name (optional)</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="label">Role</label>
-                <select
-                  className="input"
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                >
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
-                  <option value="owner">Owner</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="label">Scopes</label>
-                <div className="scopes-list">
-                  {['read', 'write', 'admin'].map((scope) => (
-                    <label key={scope} className="checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={formData.scopes?.includes(scope)}
-                        onChange={(e) => handleScopeChange(scope, e.target.checked)}
-                      />
-                      {scope}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowCreate(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={creating}>
-                  {creating ? 'Creating...' : 'Create User'}
-                </button>
-              </div>
-            </form>
-          </div>
+      {error && (
+        <div className="bg-destructive/10 text-destructive border border-destructive/20 rounded-md p-3 mb-4 text-sm">
+          {error}
         </div>
       )}
 
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add User</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                required
+                minLength={8}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="name">Name (optional)</Label>
+              <Input
+                id="name"
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="role">Role</Label>
+              <select
+                id="role"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={formData.role}
+                onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+                <option value="owner">Owner</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Scopes</Label>
+              <div className="flex gap-4">
+                {['read', 'write', 'admin'].map((scope) => (
+                  <label key={scope} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300"
+                      checked={formData.scopes?.includes(scope)}
+                      onChange={(e) => handleScopeChange(scope, e.target.checked)}
+                    />
+                    {scope}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating}>
+                {creating ? 'Creating...' : 'Create User'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {userList.length === 0 ? (
-        <div className="empty-state card">
-          <p>No users yet.</p>
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            Add your first user
-          </button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <p className="text-muted-foreground mb-4">No users yet.</p>
+            <Button onClick={() => setShowCreate(true)}>
+              Add your first user
+            </Button>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="card">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Role</th>
-                <th>Scopes</th>
-                <th>Status</th>
-                <th>Last Login</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Email</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Scopes</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Last Login</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {userList.map((user) => (
-                <tr key={user.id}>
-                  <td>
-                    {user.email}
+                <TableRow key={user.id}>
+                  <TableCell>
+                    <span className="font-medium">{user.email}</span>
                     {user.id === currentUser?.sub && (
-                      <span className="badge badge-success" style={{ marginLeft: '0.5rem' }}>You</span>
+                      <Badge variant="success" className="ml-2">You</Badge>
                     )}
-                  </td>
-                  <td>{user.name || '-'}</td>
-                  <td>
-                    <span className="badge badge-secondary">{user.role}</span>
-                  </td>
-                  <td>
-                    <div className="scopes-tags">
+                  </TableCell>
+                  <TableCell>{user.name || '-'}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{user.role}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1">
                       {user.scopes?.map((scope) => (
-                        <span key={scope} className="scope-tag">{scope}</span>
+                        <span
+                          key={scope}
+                          className="text-xs px-1.5 py-0.5 bg-muted rounded text-muted-foreground"
+                        >
+                          {scope}
+                        </span>
                       ))}
                     </div>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     <button
-                      className={`badge ${user.is_active ? 'badge-success' : 'badge-warning'}`}
                       onClick={() => handleToggleActive(user)}
-                      style={{ cursor: 'pointer', border: 'none' }}
                       title="Click to toggle"
                     >
-                      {user.is_active ? 'Active' : 'Inactive'}
+                      <Badge variant={user.is_active ? 'success' : 'warning'}>
+                        {user.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
                     </button>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {user.last_login_at
                       ? new Date(user.last_login_at).toLocaleDateString()
                       : 'Never'}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     {user.id !== currentUser?.sub && (
-                      <button
-                        className="btn btn-danger btn-sm"
+                      <Button
+                        variant="destructive"
+                        size="sm"
                         onClick={() => handleDelete(user.id, user.email)}
                       >
                         Delete
-                      </button>
+                      </Button>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </Card>
       )}
-
-      <style>{`
-        .scopes-list {
-          display: flex;
-          gap: 1rem;
-        }
-        .scopes-tags {
-          display: flex;
-          gap: 0.25rem;
-        }
-        .scope-tag {
-          font-size: 0.6875rem;
-          padding: 0.125rem 0.375rem;
-          background: var(--gray-100);
-          border-radius: 0.25rem;
-          color: var(--gray-600);
-        }
-        .badge-secondary {
-          background: var(--gray-100);
-          color: var(--gray-700);
-        }
-      `}</style>
     </div>
   );
 }

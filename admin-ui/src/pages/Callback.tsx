@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import './Login.css';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 
 export function Callback() {
   const { processCallback } = useAuth();
@@ -10,7 +11,6 @@ export function Callback() {
     const handleCallback = async () => {
       try {
         await processCallback();
-        // processCallback redirects to / on success
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Authentication failed');
       }
@@ -21,22 +21,28 @@ export function Callback() {
 
   if (error) {
     return (
-      <div className="login-container">
-        <div className="login-card">
-          <div className="login-error">{error}</div>
-          <a href="/login" className="btn btn-primary btn-login">
-            Try Again
-          </a>
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-700">
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <div className="bg-destructive/10 text-destructive border border-destructive/20 rounded-md p-3 mb-4 text-sm">
+              {error}
+            </div>
+            <Button asChild className="w-full">
+              <a href="/login">Try Again</a>
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="login-container">
-      <div className="login-card">
-        <p>Completing sign in...</p>
-      </div>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-700">
+      <Card className="w-full max-w-md">
+        <CardContent className="p-8 text-center">
+          <p className="text-muted-foreground">Completing sign in...</p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

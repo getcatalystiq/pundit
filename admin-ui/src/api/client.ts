@@ -143,6 +143,17 @@ export interface CreateUserRequest {
 
 // API functions
 
+// Connection test response
+export interface TestConnectionResponse {
+  success: boolean;
+  message: string;
+  details?: {
+    server_version?: string;
+    database?: string;
+    latency_ms?: number;
+  };
+}
+
 // Databases
 export const databases = {
   list: () => api.get<{ databases: Database[] }>('/admin/databases'),
@@ -151,6 +162,7 @@ export const databases = {
   update: (id: string, data: Partial<CreateDatabaseRequest>) =>
     api.put<Database>(`/admin/databases/${id}`, data),
   delete: (id: string) => api.delete<{ deleted: boolean }>(`/admin/databases/${id}`),
+  testConnection: (id: string) => api.post<TestConnectionResponse>(`/admin/databases/${id}/test-connection`, {}),
 };
 
 // DDL
