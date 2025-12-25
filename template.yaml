@@ -123,7 +123,7 @@ Resources:
     Type: AWS::EC2::Instance
     DependsOn: VPCGatewayAttachment
     Properties:
-      InstanceType: t4g.nano
+      InstanceType: t4g.micro
       ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
