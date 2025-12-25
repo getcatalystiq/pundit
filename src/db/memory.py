@@ -513,7 +513,7 @@ class DatabaseMemory:
 
         if existing:
             logger.debug(f"Skipping duplicate tool memory (similarity: {existing[0]['similarity']})")
-            return existing[0]["id"]
+            return None  # Return None so caller knows it wasn't saved
 
         # Insert new memory
         result = aurora.query(
@@ -574,7 +574,7 @@ class DatabaseMemory:
 
         if existing:
             logger.debug(f"Skipping duplicate text memory (similarity: {existing[0]['similarity']})")
-            return existing[0]["id"]
+            return None  # Return None so caller knows it wasn't saved
 
         # Insert new memory
         result = aurora.query(

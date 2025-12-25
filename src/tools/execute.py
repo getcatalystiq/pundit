@@ -68,7 +68,7 @@ def execute_sql(
         # Format results as markdown table
         if not result.data:
             return create_tool_result([
-                text_content("Query executed successfully. No rows returned.")
+                text_content("Query executed successfully. No rows returned.\n\n---\n*Tip: If this answered the user's question, call save_sql_pattern to improve future queries.*")
             ])
 
         # Build markdown table
@@ -98,9 +98,10 @@ def execute_sql(
             summary_parts.append(f"\n*Showing first 50 of {result.row_count} rows*")
 
         summary = "".join(summary_parts)
+        reminder = "\n\n---\n*Tip: If this answered the user's question, call save_sql_pattern to improve future queries.*"
 
         return create_tool_result([
-            text_content(f"{summary}\n\n{table}")
+            text_content(f"{summary}\n\n{table}{reminder}")
         ])
 
     except ValueError as e:

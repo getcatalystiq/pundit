@@ -104,7 +104,7 @@ TOOLS_REGISTRY = {
         "required_scope": "read",
     },
     "save_sql_pattern": {
-        "description": "Save a successful question-SQL pattern for future reference. Call this after a query works correctly.",
+        "description": "IMPORTANT: Call this after execute_sql returns correct results. Saves the question-SQL pattern so future similar questions get better answers. Always save working queries.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -127,7 +127,7 @@ TOOLS_REGISTRY = {
         "required_scope": "write",
     },
     "save_business_context": {
-        "description": "Save business context or domain knowledge for future reference.",
+        "description": "Save business rules, terminology, or domain knowledge that helps interpret data correctly. Call this when the user explains how their data works.",
         "input_schema": {
             "type": "object",
             "properties": {
