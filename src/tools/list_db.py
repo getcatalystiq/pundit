@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from ..db.connections import get_connection_manager
-from ..mcp.protocol import text_content, create_tool_result
+from db.connections import get_connection_manager
+from mcp.protocol import text_content, create_tool_result
 
 logger = logging.getLogger(__name__)
 

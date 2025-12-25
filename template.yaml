@@ -14,6 +14,7 @@ Globals:
     Environment:
       Variables:
         LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
         AURORA_SECRET_ARN: !Ref AuroraSecret
         AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
         AURORA_DATABASE: pundit
@@ -75,6 +76,126 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub pundit-${Environment}-private-2
+
+  # Public subnet for NAT Gateway
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-public
+
+  # Internet Gateway for public subnet
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # NAT Instance for Lambda to reach external databases (cheaper than NAT Gateway)
+  NatSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for NAT instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref VpcCidr
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-nat-sg
+
+  NatInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      InstanceType: t4g.nano
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref NatSecurityGroup
+      SourceDestCheck: false
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum install -y iptables-services
+          systemctl enable iptables
+          systemctl start iptables
+          echo 1 > /proc/sys/net/ipv4/ip_forward
+          echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+          sysctl -p
+          IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
+          iptables -t nat -A POSTROUTING -o $IFACE -j MASQUERADE
+          iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+          iptables -A FORWARD -j ACCEPT
+          service iptables save
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-nat
+
+  # Route tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-private-rt
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
 
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -214,6 +335,19 @@ Resources:
         - !Ref BastionSecurityGroup
       PrivateDnsEnabled: true
 
+  RdsDataEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.rds-data
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
   #############################################################################
   # Bastion Host (for GUI database access via SSM)
   #############################################################################
@@ -333,6 +467,8 @@ Resources:
         AllowMethods:
           - GET
           - POST
+          - PUT
+          - DELETE
           - OPTIONS
         AllowHeaders:
           - Content-Type
@@ -448,7 +584,9 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
                 - secretsmanager:CreateSecret
-                - secretsmanager:UpdateSecret
+                - secretsmanager:PutSecretValue
+                - secretsmanager:DescribeSecret
+                - secretsmanager:DeleteSecret
               Resource:
                 - !Ref AuroraSecret
                 - !Ref OpenAISecret
@@ -685,9 +823,12 @@ Resources:
       ContentUri: layers/dependencies/
       CompatibleRuntimes:
         - python3.12
+      CompatibleArchitectures:
+        - arm64
       RetentionPolicy: Delete
     Metadata:
       BuildMethod: python3.12
+      BuildArchitecture: arm64
 
   #############################################################################
   # Platform Admin API (IAM Authentication)

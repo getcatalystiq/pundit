@@ -40,7 +40,7 @@ def clear_context() -> None:
 
 def get_database_id(tenant_id: str, database_name: Optional[str] = None) -> Optional[str]:
     """Get database ID, resolving name to ID if needed."""
-    from ..db.connections import get_connection_manager
+    from db.connections import get_connection_manager
 
     manager = get_connection_manager()
     config = manager.get_database_config(tenant_id, database_name)

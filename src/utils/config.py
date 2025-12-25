@@ -61,8 +61,9 @@ class Config:
             return self.oauth_issuer
         if event and "requestContext" in event:
             domain = event["requestContext"].get("domainName", "")
+            stage = event["requestContext"].get("stage", "")
             if domain:
-                return f"https://{domain}"
+                return f"https://{domain}/{stage}" if stage else f"https://{domain}"
         return ""
 
 

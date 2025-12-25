@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import bcrypt
 
-from ..db.aurora import get_aurora_client, param
+from db.aurora import get_aurora_client, param
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +119,16 @@ def create_user(
     if existing:
         raise ValueError(f"User with email '{email}' already exists in this tenant")
 
+    # Convert list to PostgreSQL array format
+    def to_pg_array(items: list) -> str:
+        escaped = [item.replace('"', '\\"') for item in items]
+        return "{" + ",".join(f'"{item}"' for item in escaped) + "}"
+
     # Create user
     result = aurora.query_one(
         """
         INSERT INTO users (tenant_id, email, password_hash, name, role, scopes)
-        VALUES (:tenant_id::uuid, :email, :password_hash, :name, :role, :scopes)
+        VALUES (:tenant_id::uuid, :email, :password_hash, :name, :role, :scopes::text[])
         RETURNING id, tenant_id, email, name, role, scopes, created_at
         """,
         [
@@ -132,7 +137,7 @@ def create_user(
             param("password_hash", password_hash),
             param("name", name),
             param("role", role),
-            param("scopes", scopes),
+            param("scopes", to_pg_array(scopes)),
         ]
     )
 

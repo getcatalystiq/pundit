@@ -11,13 +11,81 @@ Authorization: Can only access resources in their own tenant
 import base64
 import json
 import logging
+import os
 from typing import Any, Optional
 
-from ..oauth.tokens import get_token_claims
-from ..db.aurora import get_aurora_client, param
-from ..db.embeddings import generate_embedding
+import boto3
+
+from oauth.tokens import get_token_claims
+from db.aurora import get_aurora_client, param
+from db.embeddings import generate_embedding
 
 logger = logging.getLogger(__name__)
+
+# Secrets Manager client (lazy initialized)
+_secrets_client = None
+
+
+def _get_secrets_client():
+    """Get or create Secrets Manager client."""
+    global _secrets_client
+    if _secrets_client is None:
+        _secrets_client = boto3.client("secretsmanager")
+    return _secrets_client
+
+
+def _store_db_credentials(tenant_id: str, db_name: str, credentials: dict) -> str:
+    """Store database credentials in AWS Secrets Manager.
+
+    Returns the secret ARN.
+    """
+    client = _get_secrets_client()
+    environment = os.environ.get("ENVIRONMENT", "dev")
+    # Sanitize db_name for use in secret name (replace spaces, special chars)
+    safe_db_name = db_name.replace(" ", "-").replace("/", "-").lower()
+    secret_name = f"pundit-{environment}-tenant-db-{tenant_id}-{safe_db_name}"
+
+    try:
+        # Try to create new secret
+        response = client.create_secret(
+            Name=secret_name,
+            SecretString=json.dumps(credentials),
+            Description=f"Pundit database credentials for {db_name}"
+        )
+        return response["ARN"]
+    except client.exceptions.ResourceExistsException:
+        # Secret already exists, update it
+        response = client.put_secret_value(
+            SecretId=secret_name,
+            SecretString=json.dumps(credentials)
+        )
+        # Get the ARN from describe
+        describe = client.describe_secret(SecretId=secret_name)
+        return describe["ARN"]
+
+
+def _get_db_credentials(secret_arn: str) -> dict:
+    """Retrieve database credentials from AWS Secrets Manager."""
+    if not secret_arn:
+        return {}
+    try:
+        client = _get_secrets_client()
+        response = client.get_secret_value(SecretId=secret_arn)
+        return json.loads(response["SecretString"])
+    except Exception as e:
+        logger.error(f"Failed to retrieve credentials: {e}")
+        return {}
+
+
+def _delete_db_credentials(secret_arn: str) -> None:
+    """Delete database credentials from AWS Secrets Manager."""
+    if not secret_arn:
+        return
+    try:
+        client = _get_secrets_client()
+        client.delete_secret(SecretId=secret_arn, ForceDeleteWithoutRecovery=True)
+    except Exception as e:
+        logger.error(f"Failed to delete credentials: {e}")
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -28,7 +96,15 @@ def handler(event: dict, context: Any) -> dict:
     Users can only manage resources in their own tenant.
     """
     http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
-    path = event.get("rawPath", "")
+    raw_path = event.get("rawPath", "")
+
+    # Strip stage prefix if present (e.g., /prod/admin/databases -> /admin/databases)
+    stage = event.get("requestContext", {}).get("stage", "")
+    if stage and raw_path.startswith(f"/{stage}"):
+        path = raw_path[len(f"/{stage}"):]
+    else:
+        path = raw_path
+
     path_params = event.get("pathParameters", {}) or {}
     headers = event.get("headers", {})
     body = event.get("body", "")
@@ -77,6 +153,7 @@ def handler(event: dict, context: Any) -> dict:
             return _update_database(tenant_id, database_id, body_params)
         elif path.startswith("/admin/databases/") and http_method == "DELETE":
             database_id = path_params.get("database_id")
+            logger.info(f"DELETE database - path: {path}, path_params: {path_params}, database_id: {database_id}")
             if "/ddl/" in path:
                 ddl_id = path_params.get("id")
                 return _delete_ddl(tenant_id, database_id, ddl_id)
@@ -211,12 +288,27 @@ def _create_database(tenant_id: str, data: dict) -> dict:
     """Create a new database connection."""
     name = data.get("name")
     db_type = data.get("db_type")
-    connection_config = data.get("connection_config", {})
-    credentials_secret_arn = data.get("credentials_secret_arn")
+    connection_config = data.get("connection_config", {}).copy()
     is_default = data.get("is_default", False)
 
     if not name or not db_type:
         return _error_response(400, "name and db_type are required")
+
+    # Extract credentials and store in Secrets Manager
+    credentials = {}
+    credentials_secret_arn = None
+    if "password" in connection_config:
+        credentials["password"] = connection_config.pop("password")
+    if "username" in connection_config:
+        credentials["username"] = connection_config.get("username")  # Keep username in config too
+
+    if credentials.get("password"):
+        try:
+            credentials_secret_arn = _store_db_credentials(tenant_id, name, credentials)
+            logger.info(f"Stored credentials in Secrets Manager: {credentials_secret_arn}")
+        except Exception as e:
+            logger.error(f"Failed to store credentials: {e}")
+            return _error_response(500, "Failed to securely store credentials")
 
     aurora = get_aurora_client()
 
@@ -252,6 +344,14 @@ def _update_database(tenant_id: str, database_id: str, data: dict) -> dict:
     """Update database configuration."""
     aurora = get_aurora_client()
 
+    # Get current database for secret ARN and name
+    current_db = aurora.query_one(
+        "SELECT name, credentials_secret_arn FROM tenant_databases WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid",
+        [param("id", database_id, "UUID"), param("tenant_id", tenant_id, "UUID")]
+    )
+    if not current_db:
+        return _error_response(404, "Database not found")
+
     # Build update query dynamically
     updates = []
     params = [
@@ -264,12 +364,28 @@ def _update_database(tenant_id: str, database_id: str, data: dict) -> dict:
         params.append(param("name", data["name"]))
 
     if "connection_config" in data:
-        updates.append("connection_config = :connection_config::jsonb")
-        params.append(param("connection_config", json.dumps(data["connection_config"])))
+        connection_config = data["connection_config"].copy()
 
-    if "credentials_secret_arn" in data:
-        updates.append("credentials_secret_arn = :credentials_secret_arn")
-        params.append(param("credentials_secret_arn", data["credentials_secret_arn"]))
+        # Extract credentials and update in Secrets Manager
+        credentials = {}
+        if "password" in connection_config:
+            credentials["password"] = connection_config.pop("password")
+        if "username" in connection_config:
+            credentials["username"] = connection_config.get("username")
+
+        if credentials.get("password"):
+            try:
+                db_name = data.get("name", current_db.get("name"))
+                secret_arn = _store_db_credentials(tenant_id, db_name, credentials)
+                if not current_db.get("credentials_secret_arn"):
+                    updates.append("credentials_secret_arn = :credentials_secret_arn")
+                    params.append(param("credentials_secret_arn", secret_arn))
+            except Exception as e:
+                logger.error(f"Failed to store credentials: {e}")
+                return _error_response(500, "Failed to securely store credentials")
+
+        updates.append("connection_config = :connection_config::jsonb")
+        params.append(param("connection_config", json.dumps(connection_config)))
 
     if "enabled" in data:
         updates.append("enabled = :enabled")
@@ -304,7 +420,14 @@ def _update_database(tenant_id: str, database_id: str, data: dict) -> dict:
 
 def _delete_database(tenant_id: str, database_id: str) -> dict:
     """Delete a database and its training data."""
+    logger.info(f"_delete_database called with tenant_id={tenant_id}, database_id={database_id}")
     aurora = get_aurora_client()
+
+    # Get secret ARN before deletion
+    db = aurora.query_one(
+        "SELECT credentials_secret_arn FROM tenant_databases WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid",
+        [param("id", database_id, "UUID"), param("tenant_id", tenant_id, "UUID")]
+    )
 
     result = aurora.query_one(
         """
@@ -320,6 +443,10 @@ def _delete_database(tenant_id: str, database_id: str) -> dict:
 
     if not result:
         return _error_response(404, "Database not found")
+
+    # Delete credentials from Secrets Manager
+    if db and db.get("credentials_secret_arn"):
+        _delete_db_credentials(db["credentials_secret_arn"])
 
     return _success_response({"deleted": True})
 
@@ -582,15 +709,15 @@ def _ai_pull_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
 
     Connects to the tenant's database and introspects the schema.
     """
-    from ..db.connections import TenantConnectionManager
-    from ..ai.schema import SchemaIntrospector
+    from db.connections import TenantConnectionManager
+    from ai.schema import SchemaIntrospector
 
     aurora = get_aurora_client()
 
     # Get database config
     db = aurora.query_one(
         """
-        SELECT db_type, connection_config, credentials_secret_arn
+        SELECT name, db_type, connection_config, credentials_secret_arn
         FROM tenant_databases
         WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
         """,
@@ -609,14 +736,13 @@ def _ai_pull_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
     try:
         # Get connection to tenant database
         conn_manager = TenantConnectionManager()
-        connection = conn_manager.get_connection(
-            db["db_type"],
-            db["connection_config"],
-            db["credentials_secret_arn"]
+        tenant_conn = conn_manager.create_connection(
+            tenant_id,
+            db["name"]
         )
 
-        # Introspect schema
-        introspector = SchemaIntrospector(connection, db["db_type"])
+        # Introspect schema (use the underlying raw connection)
+        introspector = SchemaIntrospector(tenant_conn.connection, db["db_type"])
         ddl = introspector.get_ddl(schema, tables)
 
         # Optionally auto-save the DDL
@@ -656,7 +782,7 @@ def _ai_generate_docs(tenant_id: str, database_id: str, data: dict) -> dict:
 
     Uses existing DDL to generate comprehensive documentation.
     """
-    from ..ai.generator import AIGenerator
+    from ai.generator import AIGenerator
 
     # Get existing DDL
     ddl = _get_database_ddl(tenant_id, database_id)
@@ -713,7 +839,7 @@ def _ai_generate_examples(tenant_id: str, database_id: str, data: dict) -> dict:
 
     Creates practical example queries based on the schema.
     """
-    from ..ai.generator import AIGenerator
+    from ai.generator import AIGenerator
 
     # Get existing DDL
     ddl = _get_database_ddl(tenant_id, database_id)
@@ -776,7 +902,7 @@ def _ai_analyze_schema(tenant_id: str, database_id: str) -> dict:
 
     Returns analysis including relationships, suggestions, and patterns.
     """
-    from ..ai.generator import AIGenerator
+    from ai.generator import AIGenerator
 
     # Get existing DDL
     ddl = _get_database_ddl(tenant_id, database_id)

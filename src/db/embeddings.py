@@ -5,7 +5,7 @@ from typing import Optional
 
 import openai
 
-from ..utils.secrets import get_openai_api_key
+from utils.secrets import get_openai_api_key
 
 logger = logging.getLogger(__name__)
 

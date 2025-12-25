@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode
 
-from ..utils.config import config
-from ..db.aurora import get_aurora_client, param
+from utils.config import config
+from db.aurora import get_aurora_client, param
 from .dcr import register_client, get_client, verify_client_secret, validate_redirect_uri
 from .tokens import (
     create_access_token,
@@ -48,7 +48,17 @@ def handler(event: dict, context: Any) -> dict:
     """
     # Extract request info
     http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
-    path = event.get("rawPath", "/")
+    raw_path = event.get("rawPath", "/")
+
+    # Strip stage prefix if present (e.g., /prod/.well-known -> /.well-known)
+    stage = event.get("requestContext", {}).get("stage", "")
+    if stage and raw_path.startswith(f"/{stage}"):
+        path = raw_path[len(f"/{stage}"):]
+    else:
+        path = raw_path
+
+    logger.debug(f"OAuth request: method={http_method}, raw_path={raw_path}, path={path}")
+
     headers = event.get("headers", {})
     query_params = event.get("queryStringParameters", {}) or {}
     body = event.get("body", "")
@@ -357,7 +367,15 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
     # Check if code is expired
     expires_at = auth_code.get("expires_at")
     if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        # Handle various timestamp formats from Aurora Data API
+        expires_at = expires_at.replace("Z", "+00:00")
+        if "+" not in expires_at and "-" not in expires_at[10:]:
+            # No timezone info, assume UTC
+            expires_at = expires_at + "+00:00"
+        expires_at = datetime.fromisoformat(expires_at)
+    # Ensure timezone-aware comparison
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at < datetime.now(timezone.utc):
         return _error_response(400, "invalid_grant", "Authorization code has expired")
 

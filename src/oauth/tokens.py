@@ -7,8 +7,8 @@ from typing import Any, Optional
 
 from jose import JWTError, jwt
 
-from ..utils.config import config
-from ..db.aurora import get_aurora_client, param
+from utils.config import config
+from db.aurora import get_aurora_client, param
 
 logger = logging.getLogger(__name__)
 

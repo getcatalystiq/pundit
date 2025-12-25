@@ -15,9 +15,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from ..utils.config import config
-from ..db.aurora import get_aurora_client, param
-from ..oauth.tokens import get_token_claims
+from utils.config import config
+from db.aurora import get_aurora_client, param
+from oauth.tokens import get_token_claims
 from .protocol import (
     JsonRpcRequest,
     JsonRpcResponse,
@@ -45,7 +45,7 @@ def _get_tools_registry() -> dict:
     """Lazy-load tools registry."""
     global _tools_registry
     if _tools_registry is None:
-        from ..tools import TOOLS_REGISTRY
+        from tools import TOOLS_REGISTRY
         _tools_registry = TOOLS_REGISTRY
     return _tools_registry
 

@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from .aurora import get_aurora_client, param
-from ..utils.secrets import get_tenant_db_credentials
+from utils.secrets import get_tenant_db_credentials
 
 logger = logging.getLogger(__name__)
 

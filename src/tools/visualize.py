@@ -5,7 +5,7 @@ import logging
 from io import BytesIO
 from typing import Any, Optional
 
-from ..mcp.protocol import text_content, image_content, create_tool_result
+from mcp.protocol import text_content, image_content, create_tool_result
 from .context import get_query_result
 
 logger = logging.getLogger(__name__)

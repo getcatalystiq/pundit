@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from ..mcp.protocol import text_content, create_tool_result
+from mcp.protocol import text_content, create_tool_result
 from .context import get_context, set_context, get_database_id
 
 logger = logging.getLogger(__name__)

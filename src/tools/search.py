@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from ..db.memory import get_memory
-from ..mcp.protocol import text_content, create_tool_result
+from db.memory import get_memory
+from mcp.protocol import text_content, create_tool_result
 from .context import set_context, get_database_id
 
 logger = logging.getLogger(__name__)

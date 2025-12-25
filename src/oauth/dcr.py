@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import bcrypt
 
-from ..db.aurora import get_aurora_client, param
+from db.aurora import get_aurora_client, param
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,12 @@ def register_client(
 
     # Store in database
     aurora = get_aurora_client()
+    # Convert lists to PostgreSQL array format
+    def to_pg_array(items: list) -> str:
+        """Convert Python list to PostgreSQL array literal."""
+        escaped = [item.replace('"', '\\"') for item in items]
+        return "{" + ",".join(f'"{item}"' for item in escaped) + "}"
+
     aurora.execute(
         """
         INSERT INTO oauth_clients
@@ -97,7 +103,7 @@ def register_client(
              token_endpoint_auth_method, scope, tenant_id)
         VALUES
             (:client_id, :client_secret_hash, :client_name, :client_uri,
-             :redirect_uris, :grant_types, :response_types,
+             :redirect_uris::text[], :grant_types::text[], :response_types::text[],
              :token_endpoint_auth_method, :scope, :tenant_id::uuid)
         """,
         [
@@ -105,9 +111,9 @@ def register_client(
             param("client_secret_hash", client_secret_hash),
             param("client_name", client_name),
             param("client_uri", client_uri),
-            param("redirect_uris", redirect_uris),
-            param("grant_types", grant_types),
-            param("response_types", response_types),
+            param("redirect_uris", to_pg_array(redirect_uris)),
+            param("grant_types", to_pg_array(grant_types)),
+            param("response_types", to_pg_array(response_types)),
             param("token_endpoint_auth_method", token_endpoint_auth_method),
             param("scope", scope),
             param("tenant_id", tenant_id, "UUID" if tenant_id else None),

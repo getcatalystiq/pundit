@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from ..db.connections import create_tenant_connection
-from ..mcp.protocol import text_content, create_tool_result
+from db.connections import create_tenant_connection
+from mcp.protocol import text_content, create_tool_result
 from .context import set_context, set_query_result, get_context
 
 logger = logging.getLogger(__name__)

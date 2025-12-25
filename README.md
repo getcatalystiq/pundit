@@ -81,7 +81,7 @@ McpServerUrl: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod/mcp
 API endpoint: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod  
 OAuthMetadataUrl: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod/.well-known/oauth-authorization-server 
 Platform Admin API: https://ryvt2ludm2.execute-api.us-east-1.amazonaws.com/prod  
-Admin UI: https://d3wp9d3hwi4yy.cloudfront.net 
+Admin UI: https://d3wp9d3hwi4yy.cloudfraont.net 
 
 ### 2. Configure OpenAI API Key
 
@@ -120,14 +120,14 @@ PGPASSWORD=$PASSWORD psql \
 ### 4. Create Your First Tenant
 
 ```bash
-API_URL="https://xxx.execute-api.us-east-1.amazonaws.com/dev"
+API_URL="https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod"
 
 curl -X POST "$API_URL/signup" \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_name": "My Company",
-    "email": "admin@mycompany.com",
-    "password": "secure-password-here",
+    "tenant_name": "EasyCarnet",
+    "email": "dmin@mycompany.com",
+    "password": "password",
     "name": "Admin User"
   }'
 ```

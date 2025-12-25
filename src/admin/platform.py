@@ -14,8 +14,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..db.aurora import get_aurora_client, param
-from ..db.embeddings import generate_embedding
+from db.aurora import get_aurora_client, param
+from db.embeddings import generate_embedding
 
 logger = logging.getLogger(__name__)
 

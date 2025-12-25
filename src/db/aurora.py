@@ -7,8 +7,8 @@ from typing import Any, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from ..utils.config import config
-from ..utils.secrets import get_aurora_credentials
+from utils.config import config
+from utils.secrets import get_aurora_credentials
 
 logger = logging.getLogger(__name__)
 
