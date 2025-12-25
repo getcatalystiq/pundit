@@ -84,6 +84,28 @@ class SchemaIntrospector:
         else:
             raise ValueError(f"Unsupported database type: {self.db_type}")
 
+    def get_ddl_by_table(self, schema: str = "public", tables: Optional[list[str]] = None) -> dict[str, str]:
+        """
+        Get DDL for each table separately.
+
+        Args:
+            schema: Schema name
+            tables: Optional list of specific tables
+
+        Returns:
+            Dict mapping table names to their DDL statements
+        """
+        if self.db_type == "postgresql":
+            return self._pg_get_ddl_by_table(schema, tables)
+        elif self.db_type == "mysql":
+            return self._mysql_get_ddl_by_table(schema, tables)
+        elif self.db_type == "snowflake":
+            return self._snowflake_get_ddl_by_table(schema, tables)
+        elif self.db_type == "bigquery":
+            return self._bigquery_get_ddl_by_table(schema, tables)
+        else:
+            raise ValueError(f"Unsupported database type: {self.db_type}")
+
     def get_table_info(self, table: str, schema: str = "public") -> TableInfo:
         """Get detailed information about a table."""
         if self.db_type == "postgresql":
@@ -248,6 +270,121 @@ class SchemaIntrospector:
         finally:
             cursor.close()
 
+    def _pg_get_ddl_by_table(self, schema: str, tables: Optional[list[str]] = None) -> dict[str, str]:
+        """Generate DDL for PostgreSQL tables, returning dict of table -> DDL."""
+        cursor = self.connection.cursor()
+        ddl_by_table = {}
+
+        try:
+            if tables:
+                table_list = tables
+            else:
+                table_list = self._pg_get_tables(schema)
+
+            for table in table_list:
+                # Get columns
+                cursor.execute(
+                    """
+                    SELECT
+                        column_name,
+                        data_type,
+                        character_maximum_length,
+                        numeric_precision,
+                        numeric_scale,
+                        is_nullable,
+                        column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (schema, table),
+                )
+                columns = cursor.fetchall()
+
+                # Get primary key
+                cursor.execute(
+                    """
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                        ON tc.constraint_name = kcu.constraint_name
+                        AND tc.table_schema = kcu.table_schema
+                    WHERE tc.constraint_type = 'PRIMARY KEY'
+                        AND tc.table_schema = %s
+                        AND tc.table_name = %s
+                    ORDER BY kcu.ordinal_position
+                    """,
+                    (schema, table),
+                )
+                pk_columns = [row[0] for row in cursor.fetchall()]
+
+                # Get foreign keys
+                cursor.execute(
+                    """
+                    SELECT
+                        kcu.column_name,
+                        ccu.table_name AS foreign_table,
+                        ccu.column_name AS foreign_column,
+                        tc.constraint_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                        ON tc.constraint_name = kcu.constraint_name
+                        AND tc.table_schema = kcu.table_schema
+                    JOIN information_schema.constraint_column_usage ccu
+                        ON ccu.constraint_name = tc.constraint_name
+                        AND ccu.table_schema = tc.table_schema
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                        AND tc.table_schema = %s
+                        AND tc.table_name = %s
+                    """,
+                    (schema, table),
+                )
+                foreign_keys = cursor.fetchall()
+
+                # Build CREATE TABLE statement
+                ddl = f'CREATE TABLE "{schema}"."{table}" (\n'
+
+                col_defs = []
+                for col in columns:
+                    col_name, data_type, char_len, num_prec, num_scale, nullable, default = col
+
+                    if char_len:
+                        type_str = f"{data_type}({char_len})"
+                    elif num_prec and data_type == "numeric":
+                        type_str = f"numeric({num_prec},{num_scale or 0})"
+                    else:
+                        type_str = data_type
+
+                    col_def = f'    "{col_name}" {type_str}'
+
+                    if nullable == "NO":
+                        col_def += " NOT NULL"
+                    if default:
+                        col_def += f" DEFAULT {default}"
+
+                    col_defs.append(col_def)
+
+                if pk_columns:
+                    pk_cols = ", ".join(f'"{c}"' for c in pk_columns)
+                    col_defs.append(f"    PRIMARY KEY ({pk_cols})")
+
+                for fk in foreign_keys:
+                    col, ref_table, ref_col, constraint_name = fk
+                    col_defs.append(
+                        f'    CONSTRAINT "{constraint_name}" FOREIGN KEY ("{col}") '
+                        f'REFERENCES "{schema}"."{ref_table}" ("{ref_col}")'
+                    )
+
+                ddl += ",\n".join(col_defs)
+                ddl += "\n);"
+
+                ddl_by_table[table] = ddl
+
+            return ddl_by_table
+
+        finally:
+            cursor.close()
+
     def _pg_get_table_info(self, table: str, schema: str) -> TableInfo:
         """Get detailed PostgreSQL table info."""
         cursor = self.connection.cursor()
@@ -385,6 +522,28 @@ class SchemaIntrospector:
         finally:
             cursor.close()
 
+    def _mysql_get_ddl_by_table(self, schema: str, tables: Optional[list[str]] = None) -> dict[str, str]:
+        """Generate DDL for MySQL tables, returning dict of table -> DDL."""
+        cursor = self.connection.cursor()
+        ddl_by_table = {}
+
+        try:
+            if tables:
+                table_list = tables
+            else:
+                table_list = self._mysql_get_tables(schema)
+
+            for table in table_list:
+                cursor.execute(f"SHOW CREATE TABLE `{schema}`.`{table}`")
+                row = cursor.fetchone()
+                if row:
+                    ddl_by_table[table] = row[1] + ";"
+
+            return ddl_by_table
+
+        finally:
+            cursor.close()
+
     def _mysql_get_table_info(self, table: str, schema: str) -> TableInfo:
         """Get detailed MySQL table info."""
         cursor = self.connection.cursor()
@@ -489,6 +648,28 @@ class SchemaIntrospector:
         finally:
             cursor.close()
 
+    def _snowflake_get_ddl_by_table(self, schema: str, tables: Optional[list[str]] = None) -> dict[str, str]:
+        """Generate DDL for Snowflake tables, returning dict of table -> DDL."""
+        cursor = self.connection.cursor()
+        ddl_by_table = {}
+
+        try:
+            if tables:
+                table_list = tables
+            else:
+                table_list = self._snowflake_get_tables(schema)
+
+            for table in table_list:
+                cursor.execute(f"SELECT GET_DDL('TABLE', '{schema}.{table}')")
+                row = cursor.fetchone()
+                if row:
+                    ddl_by_table[table] = row[0]
+
+            return ddl_by_table
+
+        finally:
+            cursor.close()
+
     # BigQuery implementations
     def _bigquery_get_tables(self, dataset: str) -> list[str]:
         """Get tables in BigQuery dataset."""
@@ -530,6 +711,34 @@ class SchemaIntrospector:
                     ddl_parts.append(row[0])
 
             return "\n\n".join(ddl_parts)
+
+        finally:
+            cursor.close()
+
+    def _bigquery_get_ddl_by_table(self, dataset: str, tables: Optional[list[str]] = None) -> dict[str, str]:
+        """Generate DDL for BigQuery tables, returning dict of table -> DDL."""
+        cursor = self.connection.cursor()
+        ddl_by_table = {}
+
+        try:
+            if tables:
+                table_list = tables
+            else:
+                table_list = self._bigquery_get_tables(dataset)
+
+            for table in table_list:
+                cursor.execute(
+                    f"""
+                    SELECT ddl
+                    FROM `{dataset}.INFORMATION_SCHEMA.TABLES`
+                    WHERE table_name = '{table}'
+                    """
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    ddl_by_table[table] = row[0]
+
+            return ddl_by_table
 
         finally:
             cursor.close()

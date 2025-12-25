@@ -80,6 +80,7 @@ S3_BUCKET=$(get_stack_output "AdminUIBucketName")
 CLOUDFRONT_DISTRIBUTION_ID=$(get_stack_output "AdminUIDistributionId")
 API_URL=$(get_stack_output "ApiEndpoint")
 ADMIN_UI_URL=$(get_stack_output "AdminUIUrl")
+FUNCTION_URL=$(get_stack_output "TenantAdminFunctionUrl")
 
 if [ -z "$S3_BUCKET" ]; then
     echo -e "${RED}Error: Could not find AdminUIBucketName in stack outputs${NC}"
@@ -90,6 +91,7 @@ fi
 echo -e "  S3 Bucket:    ${GREEN}${S3_BUCKET}${NC}"
 echo -e "  CloudFront:   ${GREEN}${CLOUDFRONT_DISTRIBUTION_ID}${NC}"
 echo -e "  API URL:      ${GREEN}${API_URL}${NC}"
+echo -e "  Function URL: ${GREEN}${FUNCTION_URL:-not set}${NC}"
 echo ""
 
 # =============================================================================
@@ -104,7 +106,9 @@ echo ""
 # Build
 # =============================================================================
 echo -e "${BLUE}Building application...${NC}"
-VITE_API_URL="$API_URL" npm run build
+# Remove trailing slash from Function URL if present
+FUNCTION_URL_CLEAN="${FUNCTION_URL%/}"
+VITE_API_URL="$API_URL" VITE_FUNCTION_URL="$FUNCTION_URL_CLEAN" npm run build
 echo -e "${GREEN}✓ Build complete${NC}"
 echo ""
 

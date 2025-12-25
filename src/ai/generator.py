@@ -10,44 +10,59 @@ import os
 from typing import Optional
 
 import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
 # Bedrock configuration
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
-MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-opus-4-5-20251101-v1:0")
+# Use Opus 4.5 via global inference profile
+MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-5-20251101-v1:0")
+
+# Longer timeout for Opus 4.5 which can take several minutes
+BEDROCK_CONFIG = Config(
+    read_timeout=600,  # 10 minutes
+    connect_timeout=10,
+    retries={"max_attempts": 2}
+)
 
 
 class AIGenerator:
     """AI content generator using Claude via Bedrock."""
 
     def __init__(self):
-        self.client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+        self.client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION, config=BEDROCK_CONFIG)
 
     def _invoke(self, prompt: str, max_tokens: int = 4096) -> str:
         """Invoke Claude via Bedrock."""
+        print(f"[AI] Invoking model: {MODEL_ID}")
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        response = self.client.invoke_model(
-            modelId=MODEL_ID,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(body),
-        )
+        try:
+            response = self.client.invoke_model(
+                modelId=MODEL_ID,
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(body),
+            )
+            print(f"[AI] Model invoked successfully")
 
-        result = json.loads(response["body"].read())
-        return result["content"][0]["text"]
+            result = json.loads(response["body"].read())
+            return result["content"][0]["text"]
+        except Exception as e:
+            print(f"[AI] Error invoking model: {type(e).__name__}: {e}")
+            raise
 
     def generate_documentation(
         self,
         ddl: str,
         table_name: Optional[str] = None,
         existing_docs: Optional[str] = None,
-    ) -> str:
+    ) -> dict[str, str]:
         """
         Generate documentation for database schema.
 
@@ -57,7 +72,7 @@ class AIGenerator:
             existing_docs: Optional existing documentation to enhance
 
         Returns:
-            Generated documentation text
+            Dict mapping table names to their documentation
         """
         prompt = f"""You are a database documentation expert. Generate clear, comprehensive documentation for the following database schema.
 
@@ -65,21 +80,41 @@ class AIGenerator:
 {ddl}
 </schema>
 
-{f"Focus specifically on the table: {table_name}" if table_name else "Document all tables and their relationships."}
+{f"Focus specifically on the table: {table_name}" if table_name else "Document each table separately."}
 
 {f"Existing documentation to enhance:\n{existing_docs}" if existing_docs else ""}
 
-Generate documentation that includes:
-1. **Purpose**: What this table/schema is used for
+For each table, generate documentation that includes:
+1. **Purpose**: What this table is used for
 2. **Columns**: Description of each column, its data type, and purpose
-3. **Relationships**: Foreign keys and how tables relate to each other
+3. **Relationships**: Foreign keys and how this table relates to others
 4. **Business Rules**: Any constraints, defaults, or important business logic
-5. **Common Use Cases**: How this data is typically queried or used
+5. **Common Use Cases**: How this table's data is typically queried or used
+
+Output as a JSON object where each key is a table name and each value is the complete documentation for that table:
+
+{{
+  "table_name_1": "## Purpose\\n...\\n\\n## Columns\\n...\\n\\n## Relationships\\n...\\n\\n## Business Rules\\n...\\n\\n## Common Use Cases\\n...",
+  "table_name_2": "## Purpose\\n...\\n\\n## Columns\\n...\\n\\n## Relationships\\n...\\n\\n## Business Rules\\n...\\n\\n## Common Use Cases\\n..."
+}}
 
 Write in a clear, professional style suitable for developers and analysts. Be concise but thorough.
-Output only the documentation text, no additional commentary."""
+Only output valid JSON, nothing else."""
 
-        return self._invoke(prompt)
+        response = self._invoke(prompt, max_tokens=8192)  # More tokens for multi-table docs
+
+        try:
+            # Handle potential markdown code blocks
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0]
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0]
+
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse documentation as JSON: {response}")
+            # Fallback: return as single "schema" entry
+            return {"schema": response}
 
     def generate_sample_queries(
         self,

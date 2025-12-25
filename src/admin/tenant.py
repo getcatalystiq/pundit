@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import boto3
@@ -21,6 +22,7 @@ from db.aurora import get_aurora_client, param
 from db.embeddings import generate_embedding
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Secrets Manager client (lazy initialized)
 _secrets_client = None
@@ -106,6 +108,22 @@ def handler(event: dict, context: Any) -> dict:
         path = raw_path
 
     path_params = event.get("pathParameters", {}) or {}
+
+    # For Lambda Function URLs, pathParameters is empty - extract from path
+    if not path_params and "/databases/" in path:
+        # Extract database_id from path like /admin/databases/{uuid}/...
+        db_match = re.search(r'/databases/([a-f0-9-]{36})', path)
+        if db_match:
+            path_params["database_id"] = db_match.group(1)
+        # Extract id for delete operations like /admin/databases/{uuid}/ddl/{uuid}
+        id_match = re.search(r'/(?:ddl|docs|examples)/([a-f0-9-]{36})', path)
+        if id_match:
+            path_params["id"] = id_match.group(1)
+        # Extract user_id from path like /admin/users/{uuid}
+        user_match = re.search(r'/users/([a-f0-9-]{36})', path)
+        if user_match:
+            path_params["user_id"] = user_match.group(1)
+
     headers = event.get("headers", {})
     body = event.get("body", "")
 
@@ -145,28 +163,7 @@ def handler(event: dict, context: Any) -> dict:
             return _list_databases(tenant_id)
         elif path == "/admin/databases" and http_method == "POST":
             return _create_database(tenant_id, body_params)
-        elif path.startswith("/admin/databases/") and http_method == "GET":
-            database_id = path_params.get("database_id")
-            return _get_database(tenant_id, database_id)
-        elif path.startswith("/admin/databases/") and http_method == "PUT":
-            database_id = path_params.get("database_id")
-            return _update_database(tenant_id, database_id, body_params)
-        elif path.startswith("/admin/databases/") and http_method == "DELETE":
-            database_id = path_params.get("database_id")
-            logger.info(f"DELETE database - path: {path}, path_params: {path_params}, database_id: {database_id}")
-            if "/ddl/" in path:
-                ddl_id = path_params.get("id")
-                return _delete_ddl(tenant_id, database_id, ddl_id)
-            elif "/docs/" in path:
-                doc_id = path_params.get("id")
-                return _delete_doc(tenant_id, database_id, doc_id)
-            elif "/examples/" in path:
-                example_id = path_params.get("id")
-                return _delete_example(tenant_id, database_id, example_id)
-            else:
-                return _delete_database(tenant_id, database_id)
-
-        # Training data - DDL
+        # Training data - DDL (must come before general database GET)
         elif "/ddl" in path and http_method == "GET":
             database_id = path_params.get("database_id")
             return _list_ddl(tenant_id, database_id)
@@ -203,6 +200,33 @@ def handler(event: dict, context: Any) -> dict:
         elif "/ai/analyze" in path and http_method == "POST":
             database_id = path_params.get("database_id")
             return _ai_analyze_schema(tenant_id, database_id)
+
+        # Test connection
+        elif "/test-connection" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _test_connection(tenant_id, database_id)
+
+        # Single database GET (must come after specific sub-routes)
+        elif path.startswith("/admin/databases/") and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _get_database(tenant_id, database_id)
+        elif path.startswith("/admin/databases/") and http_method == "PUT":
+            database_id = path_params.get("database_id")
+            return _update_database(tenant_id, database_id, body_params)
+        elif path.startswith("/admin/databases/") and http_method == "DELETE":
+            database_id = path_params.get("database_id")
+            logger.info(f"DELETE database - path: {path}, path_params: {path_params}, database_id: {database_id}")
+            if "/ddl/" in path:
+                ddl_id = path_params.get("id")
+                return _delete_ddl(tenant_id, database_id, ddl_id)
+            elif "/docs/" in path:
+                doc_id = path_params.get("id")
+                return _delete_doc(tenant_id, database_id, doc_id)
+            elif "/examples/" in path:
+                example_id = path_params.get("id")
+                return _delete_example(tenant_id, database_id, example_id)
+            else:
+                return _delete_database(tenant_id, database_id)
 
         # User management
         elif path == "/admin/users" and http_method == "GET":
@@ -451,12 +475,98 @@ def _delete_database(tenant_id: str, database_id: str) -> dict:
     return _success_response({"deleted": True})
 
 
+def _test_connection(tenant_id: str, database_id: str) -> dict:
+    """
+    Test the database connection.
+
+    Connects to the tenant's database and runs a simple query to verify connectivity.
+    """
+    import time
+    from db.connections import TenantConnectionManager
+
+    aurora = get_aurora_client()
+
+    # Get database config
+    db = aurora.query_one(
+        """
+        SELECT name, db_type, connection_config, credentials_secret_arn
+        FROM tenant_databases
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        """,
+        [
+            param("id", database_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not db:
+        return _error_response(404, "Database not found")
+
+    try:
+        start_time = time.time()
+
+        # Get connection to tenant database
+        conn_manager = TenantConnectionManager()
+        tenant_conn = conn_manager.create_connection(
+            tenant_id,
+            db["name"]
+        )
+
+        # Run a simple test query based on db type
+        db_type = db["db_type"].lower()
+        if db_type in ("postgres", "postgresql", "redshift"):
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT version()")
+            version_result = cursor.fetchone()
+            server_version = version_result[0] if version_result else "Unknown"
+            cursor.execute("SELECT current_database()")
+            db_result = cursor.fetchone()
+            database_name = db_result[0] if db_result else "Unknown"
+            cursor.close()
+        elif db_type == "mysql":
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT VERSION()")
+            version_result = cursor.fetchone()
+            server_version = version_result[0] if version_result else "Unknown"
+            cursor.execute("SELECT DATABASE()")
+            db_result = cursor.fetchone()
+            database_name = db_result[0] if db_result else "Unknown"
+            cursor.close()
+        else:
+            # Generic test
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            server_version = "Connected"
+            database_name = db["name"]
+
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+
+        return _success_response({
+            "success": True,
+            "message": "Connection successful",
+            "details": {
+                "server_version": server_version,
+                "database": database_name,
+                "latency_ms": latency_ms,
+            }
+        })
+
+    except Exception as e:
+        logger.exception(f"Connection test failed: {e}")
+        return _success_response({
+            "success": False,
+            "message": f"Connection failed: {str(e)}",
+        })
+
+
 # =============================================================================
 # Training Data - DDL
 # =============================================================================
 
 def _list_ddl(tenant_id: str, database_id: str) -> dict:
     """List DDL entries for a database."""
+    print(f"[DDL] _list_ddl called: tenant_id={tenant_id}, database_id={database_id}")
     aurora = get_aurora_client()
     entries = aurora.query(
         """
@@ -470,17 +580,21 @@ def _list_ddl(tenant_id: str, database_id: str) -> dict:
             param("database_id", database_id, "UUID"),
         ]
     )
+    print(f"[DDL] _list_ddl returning {len(entries)} entries")
     return _success_response({"ddl": entries})
 
 
 def _add_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
     """Add DDL entry with embedding."""
+    print(f"[DDL] _add_ddl called: tenant_id={tenant_id}, database_id={database_id}")
     ddl = data.get("ddl")
     if not ddl:
         return _error_response(400, "ddl is required")
 
     # Generate embedding
+    print(f"[DDL] Generating embedding for DDL ({len(ddl)} chars)")
     embedding = generate_embedding(ddl)
+    print(f"[DDL] Embedding generated: {len(embedding)} dimensions")
 
     aurora = get_aurora_client()
     result = aurora.query_one(
@@ -496,6 +610,7 @@ def _add_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
             param("embedding", json.dumps(embedding)),
         ]
     )
+    print(f"[DDL] DDL inserted with id={result['id']}")
 
     return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
 
@@ -743,29 +858,32 @@ def _ai_pull_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
 
         # Introspect schema (use the underlying raw connection)
         introspector = SchemaIntrospector(tenant_conn.connection, db["db_type"])
-        ddl = introspector.get_ddl(schema, tables)
-
-        # Optionally auto-save the DDL
-        if data.get("auto_save", False):
-            embedding = generate_embedding(ddl)
-            aurora.execute(
-                """
-                INSERT INTO db_ddl (tenant_id, database_id, ddl, embedding)
-                VALUES (:tenant_id::uuid, :database_id::uuid, :ddl, :embedding::vector)
-                """,
-                [
-                    param("tenant_id", tenant_id, "UUID"),
-                    param("database_id", database_id, "UUID"),
-                    param("ddl", ddl),
-                    param("embedding", json.dumps(embedding)),
-                ]
-            )
+        logger.info(f"[PULL DDL] Starting introspection for schema={schema}, db_type={db['db_type']}")
+        ddl_by_table = introspector.get_ddl_by_table(schema, tables)
+        logger.info(f"[PULL DDL] Got {len(ddl_by_table)} tables: {list(ddl_by_table.keys())}")
 
         # Get table list
-        table_list = introspector.get_tables(schema)
+        table_list = list(ddl_by_table.keys())
+
+        # Optionally auto-save the DDL (each table as separate row)
+        if data.get("auto_save", False):
+            for table_name, table_ddl in ddl_by_table.items():
+                embedding = generate_embedding(table_ddl)
+                aurora.execute(
+                    """
+                    INSERT INTO db_ddl (tenant_id, database_id, ddl, embedding)
+                    VALUES (:tenant_id::uuid, :database_id::uuid, :ddl, :embedding::vector)
+                    """,
+                    [
+                        param("tenant_id", tenant_id, "UUID"),
+                        param("database_id", database_id, "UUID"),
+                        param("ddl", table_ddl),
+                        param("embedding", json.dumps(embedding)),
+                    ]
+                )
 
         return _success_response({
-            "ddl": ddl,
+            "ddl_by_table": ddl_by_table,
             "tables": table_list,
             "schema": schema,
             "saved": data.get("auto_save", False),
@@ -781,6 +899,7 @@ def _ai_generate_docs(tenant_id: str, database_id: str, data: dict) -> dict:
     Generate documentation using AI based on the schema.
 
     Uses existing DDL to generate comprehensive documentation.
+    Returns one documentation entry per table.
     """
     from ai.generator import AIGenerator
 
@@ -794,37 +913,49 @@ def _ai_generate_docs(tenant_id: str, database_id: str, data: dict) -> dict:
 
     try:
         generator = AIGenerator()
-        documentation = generator.generate_documentation(
+        # Returns dict: {table_name: documentation_text, ...}
+        docs_by_table = generator.generate_documentation(
             ddl=ddl,
             table_name=table_name,
             existing_docs="\n---\n".join(existing_docs) if existing_docs else None,
         )
 
-        # Optionally auto-save
+        # Optionally auto-save each table's documentation as a separate row
         if data.get("auto_save", False):
             aurora = get_aurora_client()
-            embedding = generate_embedding(documentation)
-            result = aurora.query_one(
-                """
-                INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
-                VALUES (:tenant_id::uuid, :database_id::uuid, :documentation, :embedding::vector)
-                RETURNING id
-                """,
-                [
-                    param("tenant_id", tenant_id, "UUID"),
-                    param("database_id", database_id, "UUID"),
-                    param("documentation", documentation),
-                    param("embedding", json.dumps(embedding)),
-                ]
-            )
+            saved_entries = []
+
+            for tbl_name, doc_text in docs_by_table.items():
+                # Prefix with table header for clarity
+                full_doc = f"## Table: {tbl_name}\n\n{doc_text}"
+                embedding = generate_embedding(full_doc)
+
+                result = aurora.query_one(
+                    """
+                    INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
+                    VALUES (:tenant_id::uuid, :database_id::uuid, :documentation, :embedding::vector)
+                    RETURNING id
+                    """,
+                    [
+                        param("tenant_id", tenant_id, "UUID"),
+                        param("database_id", database_id, "UUID"),
+                        param("documentation", full_doc),
+                        param("embedding", json.dumps(embedding)),
+                    ]
+                )
+                saved_entries.append({
+                    "id": result["id"],
+                    "table": tbl_name,
+                })
+
             return _success_response({
-                "documentation": documentation,
+                "documentation": docs_by_table,
                 "saved": True,
-                "id": result["id"],
+                "saved_entries": saved_entries,
             })
 
         return _success_response({
-            "documentation": documentation,
+            "documentation": docs_by_table,
             "saved": False,
         })
 

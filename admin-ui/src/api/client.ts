@@ -5,6 +5,8 @@
 import { getAccessToken, logout } from '../auth/oauth';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
+// Function URL for long-running AI operations (no timeout limit)
+const FUNCTION_URL = import.meta.env.VITE_FUNCTION_URL || '';
 
 interface ApiError {
   error: string;
@@ -13,15 +15,18 @@ interface ApiError {
 
 class ApiClient {
   private baseUrl: string;
+  private functionUrl: string;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, functionUrl: string) {
     this.baseUrl = baseUrl;
+    this.functionUrl = functionUrl;
   }
 
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    useFunctionUrl = false
   ): Promise<T> {
     const token = await getAccessToken();
 
@@ -35,7 +40,10 @@ class ApiClient {
       'Content-Type': 'application/json',
     };
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    // Use Function URL for AI operations (no 30s timeout limit)
+    const baseUrl = useFunctionUrl && this.functionUrl ? this.functionUrl : this.baseUrl;
+
+    const response = await fetch(`${baseUrl}${path}`, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -73,9 +81,14 @@ class ApiClient {
   async delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
   }
+
+  // For long-running AI operations - uses Function URL to avoid API Gateway timeout
+  async postAI<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>('POST', path, body, true);
+  }
 }
 
-export const api = new ApiClient(API_BASE);
+export const api = new ApiClient(API_BASE, FUNCTION_URL);
 
 // Database types
 export interface Database {
@@ -206,16 +219,16 @@ export const users = {
 
 // AI Generation types
 export interface PullDDLResponse {
-  ddl: string;
+  ddl_by_table: Record<string, string>;
   tables: string[];
   schema: string;
   saved: boolean;
 }
 
 export interface GenerateDocsResponse {
-  documentation: string;
+  documentation: Record<string, string>;  // table_name -> documentation
   saved: boolean;
-  id?: string;
+  saved_entries?: Array<{ id: string; table: string }>;
 }
 
 export interface GeneratedExample {
@@ -251,17 +264,17 @@ export interface AnalyzeResponse {
   documentation_suggestions: string[];
 }
 
-// AI Generation
+// AI Generation - uses Function URL to bypass API Gateway 30s timeout
 export const ai = {
   pullDDL: (databaseId: string, options?: { schema?: string; tables?: string[]; auto_save?: boolean }) =>
-    api.post<PullDDLResponse>(`/admin/databases/${databaseId}/ai/pull-ddl`, options || {}),
+    api.postAI<PullDDLResponse>(`/admin/databases/${databaseId}/ai/pull-ddl`, options || {}),
 
   generateDocs: (databaseId: string, options?: { table_name?: string; auto_save?: boolean }) =>
-    api.post<GenerateDocsResponse>(`/admin/databases/${databaseId}/ai/generate-docs`, options || {}),
+    api.postAI<GenerateDocsResponse>(`/admin/databases/${databaseId}/ai/generate-docs`, options || {}),
 
   generateExamples: (databaseId: string, options?: { count?: number; context?: string; auto_save?: boolean }) =>
-    api.post<GenerateExamplesResponse>(`/admin/databases/${databaseId}/ai/generate-examples`, options || {}),
+    api.postAI<GenerateExamplesResponse>(`/admin/databases/${databaseId}/ai/generate-examples`, options || {}),
 
   analyze: (databaseId: string) =>
-    api.post<AnalyzeResponse>(`/admin/databases/${databaseId}/ai/analyze`, {}),
+    api.postAI<AnalyzeResponse>(`/admin/databases/${databaseId}/ai/analyze`, {}),
 };

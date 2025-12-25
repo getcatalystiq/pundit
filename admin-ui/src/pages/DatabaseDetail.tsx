@@ -46,6 +46,8 @@ export function DatabaseDetail() {
   const [showAiPreview, setShowAiPreview] = useState(false);
   const [aiPreviewType, setAiPreviewType] = useState<'ddl' | 'docs' | 'examples'>('ddl');
   const [aiPreviewContent, setAiPreviewContent] = useState<string>('');
+  const [aiPreviewDdlByTable, setAiPreviewDdlByTable] = useState<Record<string, string>>({});
+  const [aiPreviewDocsByTable, setAiPreviewDocsByTable] = useState<Record<string, string>>({});
   const [aiPreviewExamples, setAiPreviewExamples] = useState<GeneratedExample[]>([]);
   const [schemaAnalysis, setSchemaAnalysis] = useState<SchemaAnalysis | null>(null);
   const [docSuggestions, setDocSuggestions] = useState<string[]>([]);
@@ -206,7 +208,7 @@ export function DatabaseDetail() {
     try {
       const response = await ai.pullDDL(id!, { schema: 'public' });
       setAiPreviewType('ddl');
-      setAiPreviewContent(response.ddl);
+      setAiPreviewDdlByTable(response.ddl_by_table);
       setShowAiPreview(true);
     } catch (err: unknown) {
       const error = err as { error?: string };
@@ -226,7 +228,13 @@ export function DatabaseDetail() {
     try {
       const response = await ai.generateDocs(id!);
       setAiPreviewType('docs');
-      setAiPreviewContent(response.documentation);
+      // Store raw per-table docs for saving
+      setAiPreviewDocsByTable(response.documentation);
+      // Convert per-table documentation to formatted string for preview
+      const formattedDocs = Object.entries(response.documentation)
+        .map(([table, doc]) => `## Table: ${table}\n\n${doc}`)
+        .join('\n\n---\n\n');
+      setAiPreviewContent(formattedDocs);
       setShowAiPreview(true);
     } catch (err: unknown) {
       const error = err as { error?: string };
@@ -279,11 +287,19 @@ export function DatabaseDetail() {
     setAddingItem(true);
     try {
       if (aiPreviewType === 'ddl') {
-        await ddl.add(id!, aiPreviewContent);
-        showSuccess('DDL saved successfully');
+        const tables = Object.entries(aiPreviewDdlByTable);
+        for (const [, tableDdl] of tables) {
+          await ddl.add(id!, tableDdl);
+        }
+        showSuccess(`${tables.length} table DDL entries saved successfully`);
       } else if (aiPreviewType === 'docs') {
-        await docs.add(id!, aiPreviewContent);
-        showSuccess('Documentation saved successfully');
+        // Save each table's documentation as a separate row
+        const tables = Object.entries(aiPreviewDocsByTable);
+        for (const [tableName, docContent] of tables) {
+          // Prefix with table header for clarity
+          await docs.add(id!, `## Table: ${tableName}\n\n${docContent}`);
+        }
+        showSuccess(`${tables.length} documentation entries saved successfully`);
       } else if (aiPreviewType === 'examples') {
         for (const example of aiPreviewExamples) {
           await examples.add(id!, example.question, example.sql);
@@ -406,7 +422,18 @@ export function DatabaseDetail() {
           <p className="text-sm text-muted-foreground">Review the AI-generated content before saving</p>
 
           <div className="mt-4">
-            {(aiPreviewType === 'ddl' || aiPreviewType === 'docs') && (
+            {aiPreviewType === 'ddl' && (
+              <div className="space-y-4">
+                {Object.entries(aiPreviewDdlByTable).map(([tableName, tableDdl]) => (
+                  <div key={tableName} className="border border-border rounded-md p-4">
+                    <div className="text-sm font-medium mb-2">{tableName}</div>
+                    <pre className="bg-muted p-3 rounded text-xs whitespace-pre-wrap break-words">{tableDdl}</pre>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {aiPreviewType === 'docs' && (
               <Textarea
                 className="font-mono text-sm min-h-[300px]"
                 value={aiPreviewContent}
@@ -419,7 +446,7 @@ export function DatabaseDetail() {
                 {aiPreviewExamples.map((example, idx) => (
                   <div key={idx} className="border border-border rounded-md p-4">
                     <div className="text-sm font-medium mb-2">Q: {example.question}</div>
-                    <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">{example.sql}</pre>
+                    <pre className="bg-muted p-3 rounded text-xs whitespace-pre-wrap break-words">{example.sql}</pre>
                   </div>
                 ))}
               </div>
@@ -600,7 +627,7 @@ export function DatabaseDetail() {
                   examplesList.map((item) => (
                     <div key={item.id} className="border border-border rounded-lg p-4">
                       <div className="font-medium mb-2">Q: {item.question}</div>
-                      <pre className="bg-muted p-3 rounded text-xs overflow-x-auto mb-3">{item.sql}</pre>
+                      <pre className="bg-muted p-3 rounded text-xs whitespace-pre-wrap break-words mb-3">{item.sql}</pre>
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>{new Date(item.created_at).toLocaleDateString()}</span>
                         <Button variant="destructive" size="sm" onClick={() => handleDeleteExample(item.id)}>Delete</Button>

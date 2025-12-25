@@ -119,30 +119,49 @@ Resources:
         - Key: Name
           Value: !Sub pundit-${Environment}-nat-sg
 
-  NatInstance:
+  NatInstanceV4:
     Type: AWS::EC2::Instance
     DependsOn: VPCGatewayAttachment
     Properties:
-      InstanceType: t4g.micro
+      InstanceType: t4g.nano
       ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref NatSecurityGroup
+      IamInstanceProfile: !Ref BastionInstanceProfile
       SourceDestCheck: false
       UserData:
         Fn::Base64: |
           #!/bin/bash
+          exec > /var/log/nat-setup.log 2>&1
+          set -ex
+
+          # Enable IP forwarding immediately
+          echo 1 > /proc/sys/net/ipv4/ip_forward
+          sysctl -w net.ipv4.ip_forward=1
+
+          # Install iptables
           yum install -y iptables-services
           systemctl enable iptables
           systemctl start iptables
-          echo 1 > /proc/sys/net/ipv4/ip_forward
-          echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-          sysctl -p
-          IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-          iptables -t nat -A POSTROUTING -o $IFACE -j MASQUERADE
-          iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-          iptables -A FORWARD -j ACCEPT
+
+          # Clear existing rules and set defaults
+          iptables -F
+          iptables -t nat -F
+          iptables -P INPUT ACCEPT
+          iptables -P FORWARD ACCEPT
+          iptables -P OUTPUT ACCEPT
+
+          # NAT masquerade for all outgoing traffic from VPC
+          iptables -t nat -A POSTROUTING -s 10.0.0.0/16 ! -d 10.0.0.0/16 -j MASQUERADE
+
+          # Save rules
           service iptables save
+
+          # Make IP forwarding persistent
+          echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+
+          echo "NAT setup complete at $(date)"
       Tags:
         - Key: Name
           Value: !Sub pundit-${Environment}-nat
@@ -183,7 +202,7 @@ Resources:
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      InstanceId: !Ref NatInstance
+      InstanceId: !Ref NatInstanceV4
 
   PrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -569,8 +588,23 @@ Resources:
       CodeUri: src/
       Handler: admin.tenant.handler
       Description: Tenant admin API (OAuth authenticated, manage own tenant)
+      Timeout: 900  # 15 min for AI operations
       Layers:
         - !Ref DependenciesLayer
+      FunctionUrlConfig:
+        AuthType: NONE  # Auth handled by OAuth token in Lambda
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+          AllowHeaders:
+            - Content-Type
+            - Authorization
+          MaxAge: 86400
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -600,7 +634,9 @@ Resources:
               Action:
                 - bedrock:InvokeModel
               Resource:
-                - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0
+                - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-*
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+                - arn:aws:bedrock:*::foundation-model/anthropic.claude-*
       Events:
         # Database management (own tenant)
         AdminListDatabases:
@@ -737,6 +773,13 @@ Resources:
           Properties:
             ApiId: !Ref ApiGateway
             Path: /admin/databases/{database_id}/ai/analyze
+            Method: POST
+        # Test connection endpoint
+        AdminTestConnection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/test-connection
             Method: POST
 
   # MCP Server Function
@@ -1133,3 +1176,9 @@ Outputs:
     Value: !GetAtt AuroraCluster.Endpoint.Address
     Export:
       Name: !Sub pundit-${Environment}-aurora-endpoint
+
+  TenantAdminFunctionUrl:
+    Description: Lambda Function URL for Tenant Admin (no timeout limit)
+    Value: !GetAtt TenantAdminFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub pundit-${Environment}-tenant-admin-function-url

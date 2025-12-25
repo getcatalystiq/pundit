@@ -97,7 +97,7 @@ sam deploy \
     --s3-bucket "${S3_BUCKET}" \
     --s3-prefix "${STACK_NAME}" \
     --region "${REGION}" \
-    --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
+    --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND CAPABILITY_NAMED_IAM \
     --parameter-overrides \
         Environment="${ENVIRONMENT}" \
     --no-confirm-changeset \

@@ -23,8 +23,13 @@ export function Layout({ children }: LayoutProps) {
     <div className="flex min-h-screen">
       <nav className="w-60 bg-gray-900 dark:bg-gray-950 text-white flex flex-col fixed top-0 left-0 bottom-0">
         <div className="p-6 border-b border-white/10">
-          <h1 className="text-2xl font-bold">Pundit</h1>
-          <span className="text-xs text-gray-500 uppercase tracking-wider">Admin</span>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="Pundit" className="w-10 h-10" />
+            <div>
+              <h1 className="text-2xl font-bold">Pundit</h1>
+              <span className="text-xs text-gray-500 uppercase tracking-wider">Admin</span>
+            </div>
+          </div>
         </div>
 
         <ul className="py-4 flex-1">
