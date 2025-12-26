@@ -2,11 +2,12 @@
 
 import base64
 import logging
-import tempfile
+import os
 from typing import Any, Optional
 from uuid import uuid4
 
 import altair as alt
+import boto3
 import pandas as pd
 import vl_convert as vlc
 
@@ -14,6 +15,17 @@ from mcp.protocol import create_tool_result, image_content, text_content
 from .context import get_query_result
 
 logger = logging.getLogger(__name__)
+
+# S3 client for uploading charts
+_s3_client = None
+
+
+def _get_s3_client():
+    """Get or create S3 client."""
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+    return _s3_client
 
 
 def visualize_data(
@@ -81,13 +93,34 @@ def visualize_data(
         png_bytes = vlc.vegalite_to_png(vl_spec=chart.to_dict(), scale=2)
         png_base64 = base64.b64encode(png_bytes).decode("utf-8")
 
-        # Save to temp file for easy access
-        temp_path = f"/tmp/chart_{uuid4().hex[:8]}.png"
-        with open(temp_path, "wb") as f:
-            f.write(png_bytes)
+        # Upload to S3 for public access
+        bucket = os.environ.get("CHARTS_BUCKET")
+        cdn_url = os.environ.get("CHARTS_CDN_URL")
 
+        if bucket and cdn_url:
+            chart_key = f"charts/{uuid4().hex}.png"
+            try:
+                s3 = _get_s3_client()
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=chart_key,
+                    Body=png_bytes,
+                    ContentType="image/png",
+                )
+                public_url = f"{cdn_url}/{chart_key}"
+                logger.info(f"Chart uploaded to: {public_url}")
+
+                return create_tool_result([
+                    text_content(f"Chart: {public_url}"),
+                    image_content(png_base64, "image/png")
+                ])
+            except Exception as e:
+                logger.warning(f"Failed to upload chart to S3: {e}")
+                # Fall through to return base64 only
+
+        # Fallback if S3 not configured
         return create_tool_result([
-            text_content(f"Chart saved to: {temp_path}"),
+            text_content("Chart generated successfully."),
             image_content(png_base64, "image/png")
         ])
 
