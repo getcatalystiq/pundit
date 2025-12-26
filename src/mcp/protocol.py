@@ -112,6 +112,33 @@ SERVER_INFO = {
     "version": "0.1.0",
 }
 
+# Server instructions for the LLM
+SERVER_INSTRUCTIONS = """You are connected to a database assistant that learns and improves over time.
+
+## Learning from conversations
+
+ALWAYS save knowledge to help future queries:
+
+1. **Save business context** (save_business_context) when the user:
+   - Explains terminology ("An active user means logged in within 30 days")
+   - Describes business rules ("Revenue excludes refunds")
+   - Clarifies data meanings ("Status 1=active, 2=inactive, 3=deleted")
+   - Corrects your understanding ("No, that column represents monthly not daily")
+   - Explains metric calculations ("Churn rate = users lost / total users at start")
+   - Describes relationships ("Each order belongs to exactly one customer")
+
+2. **Save SQL patterns** (save_sql_pattern) after execute_sql returns correct results that the user accepts.
+
+## Workflow
+
+1. search_database_context - Find relevant schemas, docs, examples
+2. generate_sql - Create query using context
+3. execute_sql - Run the query
+4. save_sql_pattern - Save if results are correct
+5. save_business_context - Save any domain knowledge learned
+
+Be proactive about saving. If you learn something, save it immediately."""
+
 
 def create_initialize_result() -> dict:
     """Create response for initialize request."""
@@ -119,6 +146,7 @@ def create_initialize_result() -> dict:
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": SERVER_CAPABILITIES,
         "serverInfo": SERVER_INFO,
+        "instructions": SERVER_INSTRUCTIONS,
     }
 
 

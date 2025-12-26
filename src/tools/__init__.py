@@ -127,7 +127,7 @@ TOOLS_REGISTRY = {
         "required_scope": "write",
     },
     "save_business_context": {
-        "description": "Save business rules, terminology, or domain knowledge that helps interpret data correctly. Call this when the user explains how their data works.",
+        "description": "IMPORTANT: Save business context whenever the user explains domain knowledge. This includes: terminology definitions, business rules, metric calculations, data relationships, corrections to your understanding, or clarifications about how their data works. Proactively capture this knowledge to improve future queries. Examples: 'An active user means logged in within 30 days', 'Revenue excludes refunds', 'The status column uses 1=active, 2=inactive'.",
         "input_schema": {
             "type": "object",
             "properties": {
