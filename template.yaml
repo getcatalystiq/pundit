@@ -7,7 +7,6 @@ Description: >
 Globals:
   Function:
     Timeout: 120
-    Runtime: python3.12
     MemorySize: 1024
     Architectures:
       - arm64
@@ -504,12 +503,11 @@ Resources:
   OAuthFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub pundit-${Environment}-oauth
-      CodeUri: src/
-      Handler: oauth.server.handler
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - oauth.server.handler
       Description: OAuth 2.1 server (DCR, authorize, token, metadata)
-      Layers:
-        - !Ref DependenciesLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -604,18 +602,21 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /login
             Method: POST
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
 
   # Tenant Admin Function (OAuth authenticated - tenant admins manage their own tenant)
   TenantAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub pundit-${Environment}-tenant-admin
-      CodeUri: src/
-      Handler: admin.tenant.handler
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - admin.tenant.handler
       Description: Tenant admin API (OAuth authenticated, manage own tenant)
       Timeout: 900  # 15 min for AI operations
-      Layers:
-        - !Ref DependenciesLayer
       FunctionUrlConfig:
         AuthType: NONE  # Auth handled by OAuth token in Lambda
         Cors:
@@ -806,19 +807,22 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /admin/databases/{database_id}/test-connection
             Method: POST
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
 
   # MCP Server Function
   McpFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub pundit-${Environment}-mcp
-      CodeUri: src/
-      Handler: mcp.server.handler
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - mcp.server.handler
       Description: MCP server with Streamable HTTP transport
       MemorySize: 1024
       Timeout: 300  # 5 min for complex queries
-      Layers:
-        - !Ref DependenciesLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -853,18 +857,21 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /mcp
             Method: GET
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
 
   # Database Migration Function (invoke manually)
   MigrationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub pundit-${Environment}-migrate
-      CodeUri: src/
-      Handler: migrate.handler
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - migrate.handler
       Description: Database migration runner
       Timeout: 300
-      Layers:
-        - !Ref DependenciesLayer
       # Note: No VpcConfig - uses RDS Data API over HTTPS
       Policies:
         - Version: '2012-10-17'
@@ -879,24 +886,10 @@ Resources:
                 - rds-data:ExecuteStatement
                 - rds-data:BatchExecuteStatement
               Resource: !GetAtt AuroraCluster.DBClusterArn
-
-  #############################################################################
-  # Lambda Layer for dependencies
-  #############################################################################
-  DependenciesLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: !Sub pundit-${Environment}-dependencies
-      Description: Python dependencies for Pundit
-      ContentUri: layers/dependencies/
-      CompatibleRuntimes:
-        - python3.12
-      CompatibleArchitectures:
-        - arm64
-      RetentionPolicy: Delete
     Metadata:
-      BuildMethod: python3.12
-      BuildArchitecture: arm64
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
 
   #############################################################################
   # Platform Admin API (IAM Authentication)
@@ -919,12 +912,11 @@ Resources:
   PlatformAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub pundit-${Environment}-platform-admin
-      CodeUri: src/
-      Handler: admin.platform.handler
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - admin.platform.handler
       Description: Platform admin API (IAM authenticated)
-      Layers:
-        - !Ref DependenciesLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -1038,6 +1030,10 @@ Resources:
             RestApiId: !Ref PlatformAdminApi
             Path: /tenants/{tenant_id}/metrics
             Method: GET
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
 
   #############################################################################
   # Admin UI - S3 + CloudFront
@@ -1138,19 +1134,19 @@ Resources:
 Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint URL
-    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
       Name: !Sub pundit-${Environment}-api-endpoint
 
   McpServerUrl:
     Description: MCP Server URL for Claude
-    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/mcp"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/mcp"
     Export:
       Name: !Sub pundit-${Environment}-mcp-url
 
   OAuthMetadataUrl:
     Description: OAuth Authorization Server Metadata URL
-    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/.well-known/oauth-authorization-server"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/.well-known/oauth-authorization-server"
     Export:
       Name: !Sub pundit-${Environment}-oauth-metadata
 

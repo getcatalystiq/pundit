@@ -31,6 +31,12 @@ from .users import authenticate_user, signup, get_user
 
 logger = logging.getLogger(__name__)
 
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
+
 # Allowed domains for automatic client registration (Just-in-Time DCR)
 ALLOWED_AUTO_REGISTER_DOMAINS = [
     "claude.ai",
@@ -98,6 +104,14 @@ def handler(event: dict, context: Any) -> dict:
             body_params = {k: v[0] for k, v in parse_qs(body).items()}
 
     try:
+        # Handle CORS preflight
+        if http_method == "OPTIONS":
+            return {
+                "statusCode": 204,
+                "headers": CORS_HEADERS,
+                "body": "",
+            }
+
         # Route to handler
         if path == "/.well-known/oauth-authorization-server":
             return _handle_metadata(event)
@@ -177,6 +191,7 @@ def _handle_metadata(event: dict) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Cache-Control": "max-age=3600",
+            **CORS_HEADERS,
         },
         "body": json.dumps(metadata),
     }
@@ -202,6 +217,7 @@ def _handle_protected_resource_metadata(event: dict) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Cache-Control": "max-age=3600",
+            **CORS_HEADERS,
         },
         "body": json.dumps(metadata),
     }
@@ -221,7 +237,7 @@ def _handle_register(params: dict) -> dict:
 
     return {
         "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
         "body": json.dumps(result),
     }
 
@@ -503,6 +519,7 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
+            **CORS_HEADERS,
         },
         "body": json.dumps({
             "access_token": access_token,
@@ -560,6 +577,7 @@ def _handle_refresh_token_grant(params: dict, client_id: str, client_secret: Opt
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
+            **CORS_HEADERS,
         },
         "body": json.dumps({
             "access_token": access_token,
@@ -590,7 +608,7 @@ def _handle_userinfo(headers: dict) -> dict:
 
     return {
         "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
         "body": json.dumps({
             "sub": user["id"],
             "email": user["email"],
@@ -615,7 +633,7 @@ def _handle_signup(params: dict) -> dict:
 
     return {
         "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
         "body": json.dumps({
             "tenant": {
                 "id": result["tenant"]["id"],
@@ -654,7 +672,7 @@ def _handle_login(params: dict) -> dict:
 
     return {
         "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
         "body": json.dumps({
             "access_token": access_token,
             "token_type": "Bearer",
@@ -802,7 +820,7 @@ def _error_response(status_code: int, error: str, description: str) -> dict:
     """Return OAuth error response."""
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
         "body": json.dumps({
             "error": error,
             "error_description": description,

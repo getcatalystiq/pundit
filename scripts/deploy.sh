@@ -10,7 +10,7 @@
 # Prerequisites:
 #   - AWS CLI configured with appropriate credentials
 #   - SAM CLI installed (pip install aws-sam-cli)
-#   - Docker running (for building Lambda layers)
+#   - Docker running (for building container images)
 #
 
 set -e
@@ -62,12 +62,6 @@ fi
 echo -e "${GREEN}✓ Prerequisites OK${NC}"
 echo ""
 
-# Build Lambda layers
-echo -e "${YELLOW}Building Lambda layers...${NC}"
-./scripts/build-layers.sh
-echo -e "${GREEN}✓ Layers built${NC}"
-echo ""
-
 # Create S3 bucket for SAM artifacts if it doesn't exist
 echo -e "${YELLOW}Ensuring S3 bucket exists: ${S3_BUCKET}${NC}"
 if ! aws s3 ls "s3://${S3_BUCKET}" 2>&1 > /dev/null; then
@@ -100,6 +94,7 @@ sam deploy \
     --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND CAPABILITY_NAMED_IAM \
     --parameter-overrides \
         Environment="${ENVIRONMENT}" \
+    --resolve-image-repos \
     --no-confirm-changeset \
     --no-fail-on-empty-changeset
 

@@ -77,7 +77,7 @@ McpServerUrl: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/mcp
 API endpoint: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod  
 OAuthMetadataUrl: https://34rx3w7b29.execute-api.us-east-1.amazonaws.com/prod/.well-known/oauth-authorization-server 
 Platform Admin API: https://ryvt2ludm2.execute-api.us-east-1.amazonaws.com/prod  
-Admin UI: https://d3wp9d3hwi4yy.cloudfraont.net
+Admin UI: https://d3wp9d3hwi4yy.cloudfront.net
 ```
 
 ### 2. Configure OpenAI API Key

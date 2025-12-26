@@ -2,7 +2,9 @@
 
 import base64
 import logging
+import tempfile
 from typing import Any, Optional
+from uuid import uuid4
 
 import altair as alt
 import pandas as pd
@@ -79,7 +81,15 @@ def visualize_data(
         png_bytes = vlc.vegalite_to_png(vl_spec=chart.to_dict(), scale=2)
         png_base64 = base64.b64encode(png_bytes).decode("utf-8")
 
-        return create_tool_result([image_content(png_base64, "image/png")])
+        # Save to temp file for easy access
+        temp_path = f"/tmp/chart_{uuid4().hex[:8]}.png"
+        with open(temp_path, "wb") as f:
+            f.write(png_bytes)
+
+        return create_tool_result([
+            text_content(f"Chart saved to: {temp_path}"),
+            image_content(png_base64, "image/png")
+        ])
 
     except Exception as e:
         logger.exception(f"Chart generation failed: {e}")

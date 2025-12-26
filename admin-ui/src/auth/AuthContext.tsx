@@ -23,7 +23,7 @@ interface AuthContextType {
   isLoggedIn: boolean;
   login: () => Promise<void>;
   logout: () => void;
-  processCallback: () => Promise<void>;
+  processCallback: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -72,8 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const userInfo = await handleCallback();
       setUser(userInfo);
-      // Redirect to dashboard
-      window.location.href = '/dashboard';
+      // Return success - caller handles navigation
+      return true;
     } catch (error) {
       console.error('Callback processing failed:', error);
       throw error;

@@ -38,7 +38,6 @@ openai>=1.12.0
 # Chart rendering
 altair>=5.0.0
 vl-convert-python>=1.0.0
-pandas>=2.1.0
 
 # Utilities
 python-multipart>=0.0.6
