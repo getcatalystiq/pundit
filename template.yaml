@@ -823,6 +823,10 @@ Resources:
       Description: MCP server with Streamable HTTP transport
       MemorySize: 1024
       Timeout: 300  # 5 min for complex queries
+      Environment:
+        Variables:
+          CHARTS_BUCKET: !Ref ChartsBucket
+          CHARTS_CDN_URL: !Sub "https://${ChartsDistribution.DomainName}"
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -844,6 +848,10 @@ Resources:
                 - rds-data:ExecuteStatement
                 - rds-data:BatchExecuteStatement
               Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub ${ChartsBucket.Arn}/*
       Events:
         McpEndpoint:
           Type: HttpApi
@@ -1036,6 +1044,93 @@ Resources:
       DockerTag: !Ref Environment
 
   #############################################################################
+  # Charts Storage - S3 + CloudFront (Public Access)
+  #############################################################################
+
+  # S3 Bucket for chart images
+  ChartsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pundit-${Environment}-charts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldCharts
+            Status: Enabled
+            ExpirationInDays: 7  # Charts expire after 7 days
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-charts
+
+  # Bucket policy for CloudFront OAC access
+  ChartsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ChartsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${ChartsBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ChartsDistribution}
+
+  # CloudFront Origin Access Control for Charts
+  ChartsOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub pundit-${Environment}-charts-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution for Charts
+  ChartsDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub Pundit Charts - ${Environment}
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ChartsBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref ChartsOAC
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd  # CORS-with-preflight
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-charts
+
+  #############################################################################
   # Admin UI - S3 + CloudFront
   #############################################################################
 
@@ -1167,6 +1262,24 @@ Outputs:
     Value: !Sub "https://${PlatformAdminApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
     Export:
       Name: !Sub pundit-${Environment}-platform-admin-api
+
+  ChartsBucketName:
+    Description: S3 bucket for chart images
+    Value: !Ref ChartsBucket
+    Export:
+      Name: !Sub pundit-${Environment}-charts-bucket
+
+  ChartsDistributionId:
+    Description: CloudFront distribution ID for charts
+    Value: !Ref ChartsDistribution
+    Export:
+      Name: !Sub pundit-${Environment}-charts-distribution-id
+
+  ChartsUrl:
+    Description: Charts URL (CloudFront)
+    Value: !Sub "https://${ChartsDistribution.DomainName}"
+    Export:
+      Name: !Sub pundit-${Environment}-charts-url
 
   AdminUIBucketName:
     Description: S3 bucket for Admin UI static files
