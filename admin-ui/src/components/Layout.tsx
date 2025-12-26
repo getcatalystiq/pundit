@@ -14,7 +14,7 @@ export function Layout({ children }: LayoutProps) {
   const location = useLocation();
 
   const navItems = [
-    { path: '/', label: 'Dashboard' },
+    { path: '/dashboard', label: 'Dashboard' },
     { path: '/databases', label: 'Databases' },
     { path: '/users', label: 'Users' },
   ];

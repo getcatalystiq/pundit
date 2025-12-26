@@ -31,6 +31,25 @@ from .users import authenticate_user, signup, get_user
 
 logger = logging.getLogger(__name__)
 
+# Allowed domains for automatic client registration (Just-in-Time DCR)
+ALLOWED_AUTO_REGISTER_DOMAINS = [
+    "claude.ai",
+    "localhost",
+    "127.0.0.1",
+]
+
+
+def _is_allowed_auto_register_uri(redirect_uri: str) -> bool:
+    """Check if a redirect URI is allowed for automatic client registration."""
+    from urllib.parse import urlparse
+    parsed = urlparse(redirect_uri)
+    hostname = parsed.hostname or ""
+
+    for domain in ALLOWED_AUTO_REGISTER_DOMAINS:
+        if hostname == domain or hostname.endswith(f".{domain}"):
+            return True
+    return False
+
 
 def handler(event: dict, context: Any) -> dict:
     """
@@ -57,7 +76,7 @@ def handler(event: dict, context: Any) -> dict:
     else:
         path = raw_path
 
-    logger.debug(f"OAuth request: method={http_method}, raw_path={raw_path}, path={path}")
+    logger.info(f"OAuth request: method={http_method}, raw_path={raw_path}, path={path}")
 
     headers = event.get("headers", {})
     query_params = event.get("queryStringParameters", {}) or {}
@@ -83,16 +102,19 @@ def handler(event: dict, context: Any) -> dict:
         if path == "/.well-known/oauth-authorization-server":
             return _handle_metadata(event)
 
+        elif path == "/.well-known/oauth-protected-resource":
+            return _handle_protected_resource_metadata(event)
+
         elif path == "/oauth/register" and http_method == "POST":
             return _handle_register(body_params)
 
-        elif path == "/oauth/authorize" and http_method == "GET":
+        elif path in ["/oauth/authorize", "/authorize"] and http_method == "GET":
             return _handle_authorize_get(query_params)
 
-        elif path == "/oauth/authorize" and http_method == "POST":
+        elif path in ["/oauth/authorize", "/authorize"] and http_method == "POST":
             return _handle_authorize_post(body_params, query_params)
 
-        elif path == "/oauth/token" and http_method == "POST":
+        elif path in ["/oauth/token", "/token"] and http_method == "POST":
             return _handle_token(body_params, headers)
 
         elif path == "/oauth/userinfo" and http_method == "GET":
@@ -125,8 +147,9 @@ def _handle_metadata(event: dict) -> dict:
 
     metadata = {
         "issuer": issuer,
-        "authorization_endpoint": f"{issuer}/oauth/authorize",
-        "token_endpoint": f"{issuer}/oauth/token",
+        # Use simpler paths for Claude Desktop compatibility
+        "authorization_endpoint": f"{issuer}/authorize",
+        "token_endpoint": f"{issuer}/token",
         "registration_endpoint": f"{issuer}/oauth/register",
         "userinfo_endpoint": f"{issuer}/oauth/userinfo",
 
@@ -147,6 +170,31 @@ def _handle_metadata(event: dict) -> dict:
         # Additional metadata
         "service_documentation": "https://pundit.dev/docs",
         "ui_locales_supported": ["en"],
+    }
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "max-age=3600",
+        },
+        "body": json.dumps(metadata),
+    }
+
+
+def _handle_protected_resource_metadata(event: dict) -> dict:
+    """
+    Return OAuth Protected Resource Metadata (RFC 9728).
+
+    Required by MCP OAuth spec for resource discovery.
+    """
+    issuer = config.get_oauth_issuer(event)
+
+    metadata = {
+        "resource": f"{issuer}/mcp",
+        "authorization_servers": [issuer],
+        "scopes_supported": ["read", "write", "admin"],
+        "bearer_methods_supported": ["header"],
     }
 
     return {
@@ -183,6 +231,7 @@ def _handle_authorize_get(params: dict) -> dict:
     Handle authorization GET request.
 
     Returns an HTML login form for the user to authenticate.
+    Supports automatic client registration (DCR) for unknown clients.
     """
     client_id = params.get("client_id")
     redirect_uri = params.get("redirect_uri")
@@ -192,19 +241,34 @@ def _handle_authorize_get(params: dict) -> dict:
     code_challenge = params.get("code_challenge")
     code_challenge_method = params.get("code_challenge_method", "S256")
 
-    # Validate required parameters
-    if not client_id:
-        return _error_response(400, "invalid_request", "client_id is required")
-
     if response_type != "code":
         return _error_response(400, "unsupported_response_type", "Only 'code' response type is supported")
 
     if not redirect_uri:
         return _error_response(400, "invalid_request", "redirect_uri is required")
 
-    # Validate client and redirect URI
-    if not validate_redirect_uri(client_id, redirect_uri):
-        return _error_response(400, "invalid_request", "Invalid redirect_uri for this client")
+    # Auto-register client if not provided or doesn't exist (Just-in-Time DCR)
+    existing_client = get_client(client_id) if client_id else None
+    if not existing_client:
+        # Only allow auto-registration for known callback domains
+        if not _is_allowed_auto_register_uri(redirect_uri):
+            return _error_response(400, "invalid_request", "redirect_uri not allowed for auto-registration")
+
+        try:
+            result = register_client(
+                client_name=f"Auto-registered: {redirect_uri[:50]}",
+                redirect_uris=[redirect_uri],
+                token_endpoint_auth_method="none",  # Public client
+                client_id=client_id,  # Preserve original client_id if provided
+            )
+            client_id = result["client_id"]
+            logger.info(f"Auto-registered client {client_id} for {redirect_uri}")
+        except ValueError as e:
+            return _error_response(400, "invalid_request", str(e))
+    else:
+        # Validate redirect_uri for existing clients
+        if not validate_redirect_uri(client_id, redirect_uri):
+            return _error_response(400, "invalid_request", "Invalid redirect_uri for this client")
 
     # PKCE is required
     if not code_challenge:

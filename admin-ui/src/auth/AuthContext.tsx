@@ -73,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userInfo = await handleCallback();
       setUser(userInfo);
       // Redirect to dashboard
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     } catch (error) {
       console.error('Callback processing failed:', error);
       throw error;

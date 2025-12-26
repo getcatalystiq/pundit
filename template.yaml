@@ -478,7 +478,7 @@ Resources:
   ApiGateway:
     Type: AWS::Serverless::HttpApi
     Properties:
-      StageName: !Ref Environment
+      StageName: $default
       DisableExecuteApiEndpoint: false
       CorsConfiguration:
         AllowOrigins:
@@ -537,6 +537,12 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /.well-known/oauth-authorization-server
             Method: GET
+        OAuthProtectedResource:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /.well-known/oauth-protected-resource
+            Method: GET
         OAuthRegister:
           Type: HttpApi
           Properties:
@@ -560,6 +566,25 @@ Resources:
           Properties:
             ApiId: !Ref ApiGateway
             Path: /oauth/token
+            Method: POST
+        # Alternative routes without /oauth prefix for Claude Desktop compatibility
+        AuthorizeGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /authorize
+            Method: GET
+        AuthorizePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /authorize
+            Method: POST
+        Token:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /token
             Method: POST
         OAuthUserInfo:
           Type: HttpApi

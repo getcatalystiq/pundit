@@ -25,6 +25,7 @@ def register_client(
     client_uri: Optional[str] = None,
     scope: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    client_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Register a new OAuth client (Dynamic Client Registration).
@@ -38,6 +39,7 @@ def register_client(
         client_uri: URL of client's homepage
         scope: Space-separated list of allowed scopes
         tenant_id: Optional tenant ID to associate client with
+        client_id: Optional client ID (if not provided, one is generated)
 
     Returns:
         Client registration response with client_id and client_secret
@@ -75,8 +77,9 @@ def register_client(
     if token_endpoint_auth_method not in SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
         raise ValueError(f"Unsupported token_endpoint_auth_method: {token_endpoint_auth_method}")
 
-    # Generate client credentials
-    client_id = f"pundit_{secrets.token_urlsafe(16)}"
+    # Use provided client_id or generate one
+    if not client_id:
+        client_id = f"pundit_{secrets.token_urlsafe(16)}"
 
     # Generate client secret for confidential clients
     client_secret = None

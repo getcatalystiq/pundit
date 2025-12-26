@@ -19,7 +19,7 @@ export function Login() {
   }
 
   if (isLoggedIn) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
 
   return (

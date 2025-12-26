@@ -26,7 +26,7 @@ Storage: Aurora Serverless v2, S3 (Admin UI), CloudFront (CDN)
 - `src/mcp/` - MCP protocol with Streamable HTTP transport
 - `src/tools/` - 7 MCP tools (search, generate, execute, visualize, save, list_db, context)
 - `src/db/` - Aurora Data API, tenant database connections, embeddings
-- `layers/` - Lambda layers (dependencies + kaleido for chart rendering)
+- `layers/` - Lambda layers (dependencies + altair/vl-convert for chart rendering)
 - `migrations/` - PostgreSQL schema with pgvector for RAG
 - `admin-ui/` - React 19 + Vite 6 + TypeScript frontend
 
@@ -91,7 +91,7 @@ sam local invoke McpFunction -e events/mcp-tools-list.json
 1. `search_database_context` - RAG search over schemas/docs/examples
 2. `generate_sql` - Natural language to SQL using RAG context
 3. `execute_sql` - Execute SELECT queries (max 100 rows)
-4. `visualize_data` - Plotly charts rendered to PNG
+4. `visualize_data` - Altair charts rendered to PNG via vl-convert
 5. `save_sql_pattern` - Save question→SQL pairs for RAG training
 6. `save_business_context` - Save domain knowledge
 7. `list_databases` - List available tenant database connections

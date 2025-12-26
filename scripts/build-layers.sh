@@ -2,9 +2,7 @@
 #
 # Build Lambda layers for Pundit MCP Server
 #
-# Creates two layers:
-#   1. dependencies - Python packages (boto3, httpx, openai, psycopg2, etc.)
-#   2. kaleido - Plotly chart rendering (large binary)
+# Creates one layer with all dependencies including altair/vl-convert for visualization
 #
 
 set -e
@@ -17,16 +15,14 @@ echo "Building Lambda layers..."
 
 # Create layers directory structure
 mkdir -p "${LAYERS_DIR}/dependencies/python"
-mkdir -p "${LAYERS_DIR}/kaleido/python"
 
 # ============================================================================
-# Layer 1: Dependencies
+# Dependencies Layer (includes all packages)
 # ============================================================================
 echo "Building dependencies layer..."
 
 cat > "${LAYERS_DIR}/dependencies/requirements.txt" << 'EOF'
-# Core
-boto3>=1.34.0
+# Core (boto3 excluded - included in Lambda runtime)
 httpx>=0.27.0
 pydantic>=2.5.0
 python-jose[cryptography]>=3.3.0
@@ -39,7 +35,9 @@ pymysql>=1.1.0
 # OpenAI
 openai>=1.12.0
 
-# Data processing
+# Chart rendering
+altair>=5.0.0
+vl-convert-python>=1.0.0
 pandas>=2.1.0
 
 # Utilities
@@ -57,37 +55,20 @@ docker run --rm \
 find "${LAYERS_DIR}/dependencies/python" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find "${LAYERS_DIR}/dependencies/python" -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
 find "${LAYERS_DIR}/dependencies/python" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+find "${LAYERS_DIR}/dependencies/python" -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
 find "${LAYERS_DIR}/dependencies/python" -name "*.pyc" -delete 2>/dev/null || true
+find "${LAYERS_DIR}/dependencies/python" -name "*.pyo" -delete 2>/dev/null || true
+find "${LAYERS_DIR}/dependencies/python" -name "*.pyi" -delete 2>/dev/null || true
+find "${LAYERS_DIR}/dependencies/python" -name "py.typed" -delete 2>/dev/null || true
+# Remove numpy test data and docs
+rm -rf "${LAYERS_DIR}/dependencies/python/numpy/tests" 2>/dev/null || true
+rm -rf "${LAYERS_DIR}/dependencies/python/pandas/tests" 2>/dev/null || true
+# Strip .so files to reduce size
+find "${LAYERS_DIR}/dependencies/python" -name "*.so" -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
 # Calculate size
 DEP_SIZE=$(du -sh "${LAYERS_DIR}/dependencies/python" | cut -f1)
 echo "Dependencies layer size: ${DEP_SIZE}"
-
-# ============================================================================
-# Layer 2: Kaleido (for Plotly chart rendering)
-# ============================================================================
-echo "Building Kaleido layer..."
-
-cat > "${LAYERS_DIR}/kaleido/requirements.txt" << 'EOF'
-plotly>=5.18.0
-kaleido>=0.2.1
-EOF
-
-# Build in Docker
-docker run --rm \
-    -v "${LAYERS_DIR}/kaleido:/var/task" \
-    public.ecr.aws/sam/build-python3.12:latest \
-    pip install -r /var/task/requirements.txt -t /var/task/python --no-cache-dir
-
-# Kaleido needs special handling - it includes binaries
-# Remove unnecessary files
-find "${LAYERS_DIR}/kaleido/python" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-find "${LAYERS_DIR}/kaleido/python" -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
-find "${LAYERS_DIR}/kaleido/python" -name "*.pyc" -delete 2>/dev/null || true
-
-# Calculate size
-KAL_SIZE=$(du -sh "${LAYERS_DIR}/kaleido/python" | cut -f1)
-echo "Kaleido layer size: ${KAL_SIZE}"
 
 # ============================================================================
 # Summary
@@ -95,7 +76,6 @@ echo "Kaleido layer size: ${KAL_SIZE}"
 echo ""
 echo "Layer build complete!"
 echo "  - dependencies: ${DEP_SIZE}"
-echo "  - kaleido: ${KAL_SIZE}"
 echo ""
 echo "Note: Lambda layer limit is 250MB unzipped."
 echo "If layers are too large, consider using Lambda container images instead."

@@ -63,7 +63,10 @@ class Config:
             domain = event["requestContext"].get("domainName", "")
             stage = event["requestContext"].get("stage", "")
             if domain:
-                return f"https://{domain}/{stage}" if stage else f"https://{domain}"
+                # Don't append stage for $default stage (no path prefix)
+                if stage and stage != "$default":
+                    return f"https://{domain}/{stage}"
+                return f"https://{domain}"
         return ""
 
 

@@ -65,6 +65,8 @@ def handler(event: dict, context: Any) -> dict:
     """
     http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     headers = event.get("headers", {})
+    raw_path = event.get("rawPath", "/mcp")
+    print(f"MCP request: method={http_method}, path={raw_path}, auth={'yes' if headers.get('authorization') else 'no'}")
 
     # Handle GET (info/health)
     if http_method == "GET":
@@ -96,13 +98,13 @@ def _handle_post(event: dict, headers: dict) -> dict:
     # Authenticate
     auth_header = headers.get("authorization") or headers.get("Authorization")
     if not auth_header:
-        return _error_response(401, "Missing Authorization header")
+        return _auth_error_response(event, "Missing Authorization header")
 
     try:
         token_claims = get_token_claims(auth_header)
     except Exception as e:
         logger.warning(f"Auth failed: {e}")
-        return _error_response(401, f"Invalid token: {e}")
+        return _auth_error_response(event, f"Invalid token: {e}")
 
     # Extract session ID
     session_id = headers.get("mcp-session-id") or headers.get("Mcp-Session-Id")
@@ -130,7 +132,6 @@ def _handle_post(event: dict, headers: dict) -> dict:
             token_claims=token_claims,
         )
 
-        response = JsonRpcResponse.success(request.id, result)
         response_headers = {"Content-Type": "application/json"}
 
         if new_session_id:
@@ -144,10 +145,17 @@ def _handle_post(event: dict, headers: dict) -> dict:
                 "body": "",
             }
 
+        # Build response dict directly to avoid serialization issues
+        response_body = {
+            "jsonrpc": "2.0",
+            "id": request.id,
+            "result": result,
+        }
+
         return {
             "statusCode": 200,
             "headers": response_headers,
-            "body": json.dumps(response.to_dict()),
+            "body": json.dumps(response_body),
         }
 
     except McpError as e:
@@ -343,5 +351,20 @@ def _error_response(status_code: int, message: str) -> dict:
     return {
         "statusCode": status_code,
         "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"error": message}),
+    }
+
+
+def _auth_error_response(event: dict, message: str) -> dict:
+    """Create 401 error response with WWW-Authenticate header (RFC 9728)."""
+    issuer = config.get_oauth_issuer(event)
+    resource_metadata_url = f"{issuer}/.well-known/oauth-protected-resource"
+
+    return {
+        "statusCode": 401,
+        "headers": {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": f'Bearer resource_metadata="{resource_metadata_url}"',
+        },
         "body": json.dumps({"error": message}),
     }
