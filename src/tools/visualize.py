@@ -1,11 +1,14 @@
-"""Visualize data tool with Kaleido for Base64 PNG rendering."""
+"""Visualize data tool - generates chart images using Altair."""
 
 import base64
 import logging
-from io import BytesIO
 from typing import Any, Optional
 
-from mcp.protocol import text_content, image_content, create_tool_result
+import altair as alt
+import pandas as pd
+import vl_convert as vlc
+
+from mcp.protocol import create_tool_result, image_content, text_content
 from .context import get_query_result
 
 logger = logging.getLogger(__name__)
@@ -19,8 +22,7 @@ def visualize_data(
     """
     Generate a chart visualization from the last query results.
 
-    Uses Plotly for chart generation and Kaleido to render to PNG.
-    Returns base64-encoded image that Claude can display inline.
+    Returns a PNG image of the chart.
     """
     chart_type = arguments.get("chart_type", "bar")
     x_column = arguments.get("x_column")
@@ -34,7 +36,6 @@ def visualize_data(
             is_error=True,
         )
 
-    # Get last query results
     data, columns = get_query_result()
 
     if not data:
@@ -46,7 +47,6 @@ def visualize_data(
             is_error=True,
         )
 
-    # Validate columns exist
     if x_column not in columns:
         return create_tool_result(
             [text_content(f"Error: Column '{x_column}' not found. Available: {columns}")],
@@ -66,9 +66,9 @@ def visualize_data(
         )
 
     try:
-        # Generate chart
-        image_base64 = _generate_chart(
-            data=data,
+        df = pd.DataFrame(data)
+        chart = _create_chart(
+            df=df,
             chart_type=chart_type,
             x_column=x_column,
             y_column=y_column,
@@ -76,20 +76,11 @@ def visualize_data(
             color_column=color_column,
         )
 
-        return create_tool_result([
-            text_content(f"Generated {chart_type} chart: {title}"),
-            image_content(image_base64, "image/png"),
-        ])
+        png_bytes = vlc.vegalite_to_png(vl_spec=chart.to_dict(), scale=2)
+        png_base64 = base64.b64encode(png_bytes).decode("utf-8")
 
-    except ImportError as e:
-        logger.warning(f"Visualization dependencies not available: {e}")
-        return create_tool_result(
-            [text_content(
-                "Chart rendering is not available. "
-                "Install plotly and kaleido packages."
-            )],
-            is_error=True,
-        )
+        return create_tool_result([image_content(png_base64, "image/png")])
+
     except Exception as e:
         logger.exception(f"Chart generation failed: {e}")
         return create_tool_result(
@@ -98,77 +89,41 @@ def visualize_data(
         )
 
 
-def _generate_chart(
-    data: list[dict],
+def _create_chart(
+    df: pd.DataFrame,
     chart_type: str,
     x_column: str,
     y_column: str,
     title: str,
     color_column: Optional[str] = None,
-) -> str:
-    """
-    Generate chart using Plotly and render to base64 PNG with Kaleido.
+) -> alt.Chart:
+    """Create an Altair chart based on the chart type."""
+    base = alt.Chart(df).properties(title=title, width=600, height=400)
 
-    Args:
-        data: List of row dicts
-        chart_type: Type of chart (bar, line, pie, scatter, area, histogram)
-        x_column: X axis column
-        y_column: Y axis column
-        title: Chart title
-        color_column: Optional color grouping column
+    x_enc = alt.X(x_column, axis=alt.Axis(labelAngle=-45))
+    y_enc = alt.Y(y_column)
+    color_enc = alt.Color(color_column) if color_column else alt.Undefined
 
-    Returns:
-        Base64-encoded PNG image
-    """
-    import plotly.express as px
-    import plotly.graph_objects as go
-    import pandas as pd
-
-    # Convert to DataFrame
-    df = pd.DataFrame(data)
-
-    # Chart configuration
-    chart_config = {
-        "x": x_column,
-        "y": y_column,
-        "title": title,
-    }
-
-    if color_column:
-        chart_config["color"] = color_column
-
-    # Generate chart based on type
     if chart_type == "bar":
-        fig = px.bar(df, **chart_config)
+        return base.mark_bar().encode(x=x_enc, y=y_enc, color=color_enc)
+
     elif chart_type == "line":
-        fig = px.line(df, **chart_config)
-    elif chart_type == "pie":
-        # Pie chart uses names and values instead of x/y
-        fig = px.pie(df, names=x_column, values=y_column, title=title)
+        return base.mark_line().encode(x=x_enc, y=y_enc, color=color_enc)
+
     elif chart_type == "scatter":
-        fig = px.scatter(df, **chart_config)
+        return base.mark_circle(size=60).encode(x=x_enc, y=y_enc, color=color_enc)
+
     elif chart_type == "area":
-        fig = px.area(df, **chart_config)
+        return base.mark_area().encode(x=x_enc, y=y_enc, color=color_enc)
+
+    elif chart_type == "pie":
+        return base.mark_arc().encode(theta=y_column, color=x_column)
+
     elif chart_type == "histogram":
-        fig = px.histogram(df, x=x_column, title=title)
-        if color_column:
-            fig = px.histogram(df, x=x_column, color=color_column, title=title)
+        return base.mark_bar().encode(x=alt.X(x_column, bin=True), y="count()")
+
     else:
-        raise ValueError(f"Unsupported chart type: {chart_type}")
-
-    # Style the chart
-    fig.update_layout(
-        template="plotly_white",
-        font=dict(family="Arial, sans-serif", size=12),
-        title=dict(font=dict(size=16)),
-        margin=dict(l=50, r=50, t=60, b=50),
-    )
-
-    # Render to PNG bytes using Kaleido
-    img_bytes = fig.to_image(format="png", width=800, height=500, scale=2)
-
-    # Encode to base64
-    return base64.b64encode(img_bytes).decode("utf-8")
+        return base.mark_bar().encode(x=x_enc, y=y_enc, color=color_enc)
 
 
 def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any]:
@@ -185,7 +140,6 @@ def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any
     if not data or not columns:
         return {"chart_type": "bar", "x_column": None, "y_column": None}
 
-    # Analyze columns
     sample_row = data[0]
     numeric_cols = []
     categorical_cols = []
@@ -196,19 +150,15 @@ def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any
         if val is None:
             continue
 
-        # Check if numeric
         if isinstance(val, (int, float)):
             numeric_cols.append(col)
-        # Check if date-like string
         elif isinstance(val, str) and any(d in col.lower() for d in ["date", "time", "month", "year"]):
             date_cols.append(col)
         else:
             categorical_cols.append(col)
 
-    # Suggest based on data shape
     num_rows = len(data)
 
-    # Time series
     if date_cols and numeric_cols:
         return {
             "chart_type": "line",
@@ -216,7 +166,6 @@ def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any
             "y_column": numeric_cols[0],
         }
 
-    # Small categorical data -> pie
     if categorical_cols and numeric_cols and num_rows <= 10:
         return {
             "chart_type": "pie",
@@ -224,7 +173,6 @@ def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any
             "y_column": numeric_cols[0],
         }
 
-    # Large numeric data -> scatter
     if len(numeric_cols) >= 2 and num_rows > 20:
         return {
             "chart_type": "scatter",
@@ -232,7 +180,6 @@ def suggest_visualization(data: list[dict], columns: list[str]) -> dict[str, Any
             "y_column": numeric_cols[1],
         }
 
-    # Default to bar
     x_col = categorical_cols[0] if categorical_cols else columns[0]
     y_col = numeric_cols[0] if numeric_cols else columns[1] if len(columns) > 1 else columns[0]
 
