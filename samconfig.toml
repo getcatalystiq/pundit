@@ -41,7 +41,7 @@ s3_prefix = "pundit-staging"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 confirm_changeset = true
-parameter_overrides = "Environment=\"staging\""
+parameter_overrides = "Environment=\"staging\" MavenVpcId=\"/maven/staging/vpc-id\" MavenPrivateSubnet1=\"/maven/staging/private-subnet-1\" MavenPrivateSubnet2=\"/maven/staging/private-subnet-2\" MavenDBSubnetGroup=\"/maven/staging/db-subnet-group\" MavenLambdaSecurityGroup=\"/maven/staging/lambda-sg\" MavenBastionSecurityGroup=\"/maven/staging/bastion-sg\""
 
 # ============================================================================
 # Production environment
@@ -52,5 +52,7 @@ stack_name = "pundit-prod"
 s3_prefix = "pundit-prod"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
-confirm_changeset = true
-parameter_overrides = "Environment=\"prod\" AuroraMinCapacity=\"0.5\" AuroraMaxCapacity=\"16\""
+confirm_changeset = false
+resolve_s3 = true
+resolve_image_repos = true
+parameter_overrides = "Environment=\"prod\" AuroraMinCapacity=\"0.5\" AuroraMaxCapacity=\"16\" MavenVpcId=\"/maven/prod/vpc-id\" MavenPrivateSubnet1=\"/maven/prod/private-subnet-1\" MavenPrivateSubnet2=\"/maven/prod/private-subnet-2\" MavenDBSubnetGroup=\"/maven/prod/db-subnet-group\" MavenLambdaSecurityGroup=\"/maven/prod/lambda-sg\" MavenBastionSecurityGroup=\"/maven/prod/bastion-sg\""

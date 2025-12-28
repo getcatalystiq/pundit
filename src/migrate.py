@@ -65,7 +65,10 @@ def handler(event, context):
             # Track function/procedure blocks (they contain semicolons)
             if 'CREATE OR REPLACE FUNCTION' in line or 'CREATE FUNCTION' in line:
                 in_function = True
-            if in_function and stripped == '$$;':
+
+            # Function blocks end with $$ followed by optional LANGUAGE clause and ;
+            # e.g., "$$;" or "$$ LANGUAGE plpgsql;"
+            if in_function and stripped.startswith('$$') and stripped.endswith(';'):
                 in_function = False
                 current_statement.append(line)
                 statements.append('\n'.join(current_statement))

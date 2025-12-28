@@ -8,6 +8,18 @@ MIGRATION_FILE="${2:-migrations/001_initial_schema.sql}"
 echo "Running migrations for environment: $ENVIRONMENT"
 echo "Migration file: $MIGRATION_FILE"
 
+# Get the actual Lambda function name from CloudFormation
+FUNCTION_NAME=$(aws lambda list-functions \
+    --query "Functions[?contains(FunctionName, 'pundit-${ENVIRONMENT}-MigrationFunction')].FunctionName | [0]" \
+    --output text 2>/dev/null)
+
+if [[ -z "$FUNCTION_NAME" || "$FUNCTION_NAME" == "None" ]]; then
+    echo "Error: Could not find MigrationFunction for pundit-${ENVIRONMENT}"
+    exit 1
+fi
+
+echo "Lambda function: $FUNCTION_NAME"
+
 # Check if migration file exists
 if [[ ! -f "$MIGRATION_FILE" ]]; then
     echo "Error: Migration file not found: $MIGRATION_FILE"
@@ -28,7 +40,7 @@ echo "Invoking migration Lambda..."
 OUTPUT_FILE=$(mktemp)
 
 aws lambda invoke \
-    --function-name "pundit-${ENVIRONMENT}-migrate" \
+    --function-name "$FUNCTION_NAME" \
     --payload "file://$PAYLOAD_FILE" \
     --cli-binary-format raw-in-base64-out \
     --cli-read-timeout 300 \

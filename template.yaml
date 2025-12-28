@@ -3,6 +3,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   Pundit - Standalone MCP Server for Database Tools
   OAuth 2.1 with PKCE, Streamable HTTP transport, OpenAI embeddings
+  Uses shared VPC infrastructure from Maven
 
 Globals:
   Function:
@@ -38,219 +39,45 @@ Parameters:
     Default: 4
     Description: Maximum ACUs for Aurora Serverless v2
 
-  VpcCidr:
-    Type: String
-    Default: 10.0.0.0/16
+  # Import Maven VPC resources via SSM parameters
+  MavenVpcId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/vpc-id
+
+  MavenPrivateSubnet1:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/private-subnet-1
+
+  MavenPrivateSubnet2:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/private-subnet-2
+
+  MavenDBSubnetGroup:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/db-subnet-group
+
+  MavenLambdaSecurityGroup:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/lambda-sg
+
+  MavenBastionSecurityGroup:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /maven/dev/bastion-sg
 
 Resources:
   #############################################################################
-  # VPC for Aurora
+  # Security Groups (Pundit-specific, references Maven's SGs for ingress)
   #############################################################################
-  VPC:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: !Ref VpcCidr
-      EnableDnsHostnames: true
-      EnableDnsSupport: true
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-vpc
-
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]]
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-private-1
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]]
-      AvailabilityZone: !Select [1, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-private-2
-
-  # Public subnet for NAT Gateway
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
-      AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-public
-
-  # Internet Gateway for public subnet
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-igw
-
-  VPCGatewayAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  # NAT Instance for Lambda to reach external databases (cheaper than NAT Gateway)
-  NatSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for NAT instance
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: -1
-          CidrIp: !Ref VpcCidr
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-nat-sg
-
-  NatInstanceV4:
-    Type: AWS::EC2::Instance
-    DependsOn: VPCGatewayAttachment
-    Properties:
-      InstanceType: t4g.nano
-      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
-      SubnetId: !Ref PublicSubnet
-      SecurityGroupIds:
-        - !Ref NatSecurityGroup
-      IamInstanceProfile: !Ref BastionInstanceProfile
-      SourceDestCheck: false
-      UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          exec > /var/log/nat-setup.log 2>&1
-          set -ex
-
-          # Enable IP forwarding immediately
-          echo 1 > /proc/sys/net/ipv4/ip_forward
-          sysctl -w net.ipv4.ip_forward=1
-
-          # Install iptables
-          yum install -y iptables-services
-          systemctl enable iptables
-          systemctl start iptables
-
-          # Clear existing rules and set defaults
-          iptables -F
-          iptables -t nat -F
-          iptables -P INPUT ACCEPT
-          iptables -P FORWARD ACCEPT
-          iptables -P OUTPUT ACCEPT
-
-          # NAT masquerade for all outgoing traffic from VPC
-          iptables -t nat -A POSTROUTING -s 10.0.0.0/16 ! -d 10.0.0.0/16 -j MASQUERADE
-
-          # Save rules
-          service iptables save
-
-          # Make IP forwarding persistent
-          echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-
-          echo "NAT setup complete at $(date)"
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-nat
-
-  # Route tables
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-public-rt
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: VPCGatewayAttachment
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
-
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-private-rt
-
-  PrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      InstanceId: !Ref NatInstanceV4
-
-  PrivateSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet1
-      RouteTableId: !Ref PrivateRouteTable
-
-  PrivateSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref PrivateRouteTable
-
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Subnet group for Pundit Aurora
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-db-subnet-group
-
-  #############################################################################
-  # Security Groups
-  #############################################################################
-  LambdaSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for Pundit Lambda functions
-      VpcId: !Ref VPC
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-lambda-sg
-
   AuroraSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Pundit Aurora cluster
-      VpcId: !Ref VPC
+      VpcId: !Ref MavenVpcId
       Tags:
         - Key: Name
           Value: !Sub pundit-${Environment}-aurora-sg
 
-  # Ingress rules for Aurora (separate resources to handle circular dependency)
+  # Allow Maven's Lambda SG to access Pundit Aurora
   AuroraSecurityGroupLambdaIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -258,8 +85,9 @@ Resources:
       IpProtocol: tcp
       FromPort: 5432
       ToPort: 5432
-      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      SourceSecurityGroupId: !Ref MavenLambdaSecurityGroup
 
+  # Allow Maven's Bastion SG to access Pundit Aurora
   AuroraSecurityGroupBastionIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -267,144 +95,7 @@ Resources:
       IpProtocol: tcp
       FromPort: 5432
       ToPort: 5432
-      SourceSecurityGroupId: !Ref BastionSecurityGroup
-
-  BastionSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for Bastion host
-      GroupName: !Sub pundit-${Environment}-bastion-sg
-      VpcId: !Ref VPC
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          DestinationSecurityGroupId: !Ref AuroraSecurityGroup
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-bastion-sg
-
-  # Allow bastion to reach VPC endpoints (SSM requires HTTPS inbound)
-  BastionSecurityGroupSelfIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref BastionSecurityGroup
-      IpProtocol: tcp
-      FromPort: 443
-      ToPort: 443
-      SourceSecurityGroupId: !Ref BastionSecurityGroup
-
-  #############################################################################
-  # VPC Endpoints (for Lambda and SSM)
-  #############################################################################
-  SecretsManagerEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
-      VpcEndpointType: Interface
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref LambdaSecurityGroup
-      PrivateDnsEnabled: true
-
-  SSMEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
-      VpcEndpointType: Interface
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      PrivateDnsEnabled: true
-
-  SSMMessagesEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
-      VpcEndpointType: Interface
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      PrivateDnsEnabled: true
-
-  EC2MessagesEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
-      VpcEndpointType: Interface
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      PrivateDnsEnabled: true
-
-  RdsDataEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.rds-data
-      VpcEndpointType: Interface
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref LambdaSecurityGroup
-      PrivateDnsEnabled: true
-
-  #############################################################################
-  # Bastion Host (for GUI database access via SSM)
-  #############################################################################
-  BastionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub pundit-${Environment}-bastion-role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-bastion-role
-
-  BastionInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      InstanceProfileName: !Sub pundit-${Environment}-bastion-profile
-      Roles:
-        - !Ref BastionRole
-
-  BastionInstance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: t4g.micro
-      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
-      SubnetId: !Ref PrivateSubnet1
-      IamInstanceProfile: !Ref BastionInstanceProfile
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub pundit-${Environment}-bastion
+      SourceSecurityGroupId: !Ref MavenBastionSecurityGroup
 
   #############################################################################
   # Aurora Serverless v2
@@ -432,10 +123,10 @@ Resources:
       ServerlessV2ScalingConfiguration:
         MinCapacity: !Ref AuroraMinCapacity
         MaxCapacity: !Ref AuroraMaxCapacity
-      DBSubnetGroupName: !Ref DBSubnetGroup
+      DBSubnetGroupName: !Ref MavenDBSubnetGroup
       VpcSecurityGroupIds:
         - !Ref AuroraSecurityGroup
-      EnableHttpEndpoint: true  # Data API for easier Lambda access
+      EnableHttpEndpoint: true
       StorageEncrypted: true
       Tags:
         - Key: Name
@@ -453,7 +144,6 @@ Resources:
         - Key: Name
           Value: !Sub pundit-${Environment}-instance-1
 
-  # Attach secret to Aurora cluster for rotation
   AuroraSecretAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
     Properties:
@@ -510,10 +200,10 @@ Resources:
       Description: OAuth 2.1 server (DCR, authorize, token, metadata)
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
+          - !Ref MavenLambdaSecurityGroup
         SubnetIds:
-          - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
+          - !Ref MavenPrivateSubnet1
+          - !Ref MavenPrivateSubnet2
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -565,7 +255,6 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /oauth/token
             Method: POST
-        # Alternative routes without /oauth prefix for Claude Desktop compatibility
         AuthorizeGet:
           Type: HttpApi
           Properties:
@@ -607,7 +296,7 @@ Resources:
       Dockerfile: Dockerfile
       DockerTag: !Ref Environment
 
-  # Tenant Admin Function (OAuth authenticated - tenant admins manage their own tenant)
+  # Tenant Admin Function
   TenantAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -616,9 +305,9 @@ Resources:
         Command:
           - admin.tenant.handler
       Description: Tenant admin API (OAuth authenticated, manage own tenant)
-      Timeout: 900  # 15 min for AI operations
+      Timeout: 900
       FunctionUrlConfig:
-        AuthType: NONE  # Auth handled by OAuth token in Lambda
+        AuthType: NONE
         Cors:
           AllowOrigins:
             - "*"
@@ -633,10 +322,10 @@ Resources:
           MaxAge: 86400
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
+          - !Ref MavenLambdaSecurityGroup
         SubnetIds:
-          - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
+          - !Ref MavenPrivateSubnet1
+          - !Ref MavenPrivateSubnet2
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -664,7 +353,6 @@ Resources:
                 - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
                 - arn:aws:bedrock:*::foundation-model/anthropic.claude-*
       Events:
-        # Database management (own tenant)
         AdminListDatabases:
           Type: HttpApi
           Properties:
@@ -695,7 +383,6 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /admin/databases/{database_id}
             Method: DELETE
-        # Training data management (own tenant)
         AdminListDDL:
           Type: HttpApi
           Properties:
@@ -750,7 +437,6 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /admin/databases/{database_id}/examples/{id}
             Method: DELETE
-        # User management (own tenant)
         AdminListUsers:
           Type: HttpApi
           Properties:
@@ -775,7 +461,6 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /admin/users/{user_id}
             Method: DELETE
-        # AI Generation endpoints
         AdminAIPullDDL:
           Type: HttpApi
           Properties:
@@ -800,7 +485,6 @@ Resources:
             ApiId: !Ref ApiGateway
             Path: /admin/databases/{database_id}/ai/analyze
             Method: POST
-        # Test connection endpoint
         AdminTestConnection:
           Type: HttpApi
           Properties:
@@ -822,17 +506,17 @@ Resources:
           - mcp.server.handler
       Description: MCP server with Streamable HTTP transport
       MemorySize: 1024
-      Timeout: 300  # 5 min for complex queries
+      Timeout: 300
       Environment:
         Variables:
           CHARTS_BUCKET: !Ref ChartsBucket
           CHARTS_CDN_URL: !Sub "https://${ChartsDistribution.DomainName}"
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
+          - !Ref MavenLambdaSecurityGroup
         SubnetIds:
-          - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
+          - !Ref MavenPrivateSubnet1
+          - !Ref MavenPrivateSubnet2
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -870,7 +554,7 @@ Resources:
       Dockerfile: Dockerfile
       DockerTag: !Ref Environment
 
-  # Database Migration Function (invoke manually)
+  # Database Migration Function
   MigrationFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -880,7 +564,6 @@ Resources:
           - migrate.handler
       Description: Database migration runner
       Timeout: 300
-      # Note: No VpcConfig - uses RDS Data API over HTTPS
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -902,8 +585,6 @@ Resources:
   #############################################################################
   # Platform Admin API (IAM Authentication)
   #############################################################################
-
-  # REST API for IAM-authenticated admin endpoints
   PlatformAdminApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -916,7 +597,6 @@ Resources:
         AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Amz-Security-Token'"
 
-  # Platform Admin Lambda Function
   PlatformAdminFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -927,10 +607,10 @@ Resources:
       Description: Platform admin API (IAM authenticated)
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
+          - !Ref MavenLambdaSecurityGroup
         SubnetIds:
-          - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
+          - !Ref MavenPrivateSubnet1
+          - !Ref MavenPrivateSubnet2
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -950,7 +630,6 @@ Resources:
                 - rds-data:BatchExecuteStatement
               Resource: !GetAtt AuroraCluster.DBClusterArn
       Events:
-        # Tenant management
         ListTenants:
           Type: Api
           Properties:
@@ -981,7 +660,6 @@ Resources:
             RestApiId: !Ref PlatformAdminApi
             Path: /tenants/{tenant_id}
             Method: DELETE
-        # Database management
         ListDatabases:
           Type: Api
           Properties:
@@ -1006,7 +684,6 @@ Resources:
             RestApiId: !Ref PlatformAdminApi
             Path: /tenants/{tenant_id}/databases/{database_id}
             Method: DELETE
-        # Training data management
         ListTrainingData:
           Type: Api
           Properties:
@@ -1025,7 +702,6 @@ Resources:
             RestApiId: !Ref PlatformAdminApi
             Path: /tenants/{tenant_id}/databases/{database_id}/training/{type}/{id}
             Method: DELETE
-        # Metrics and stats
         GetMetrics:
           Type: Api
           Properties:
@@ -1044,10 +720,8 @@ Resources:
       DockerTag: !Ref Environment
 
   #############################################################################
-  # Charts Storage - S3 + CloudFront (Public Access)
+  # Charts Storage - S3 + CloudFront
   #############################################################################
-
-  # S3 Bucket for chart images
   ChartsBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -1065,12 +739,11 @@ Resources:
         Rules:
           - Id: DeleteOldCharts
             Status: Enabled
-            ExpirationInDays: 7  # Charts expire after 7 days
+            ExpirationInDays: 7
       Tags:
         - Key: Name
           Value: !Sub pundit-${Environment}-charts
 
-  # Bucket policy for CloudFront OAC access
   ChartsBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -1088,7 +761,6 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ChartsDistribution}
 
-  # CloudFront Origin Access Control for Charts
   ChartsOAC:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -1098,7 +770,6 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  # CloudFront Distribution for Charts
   ChartsDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -1124,8 +795,8 @@ Resources:
             - GET
             - HEAD
           Compress: true
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
-          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd  # CORS-with-preflight
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd
       Tags:
         - Key: Name
           Value: !Sub pundit-${Environment}-charts
@@ -1133,8 +804,6 @@ Resources:
   #############################################################################
   # Admin UI - S3 + CloudFront
   #############################################################################
-
-  # S3 Bucket for Admin UI static files
   AdminUIBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -1152,7 +821,6 @@ Resources:
         - Key: Name
           Value: !Sub pundit-${Environment}-admin-ui
 
-  # Bucket policy for CloudFront OAC access
   AdminUIBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -1170,7 +838,6 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminUIDistribution}
 
-  # CloudFront Origin Access Control
   AdminUIOAC:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -1180,7 +847,6 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  # CloudFront Distribution
   AdminUIDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -1207,10 +873,9 @@ Resources:
             - GET
             - HEAD
           Compress: true
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
-          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd  # CORS-with-preflight
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd
         CustomErrorResponses:
-          # SPA routing - serve index.html for 404s
           - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
@@ -1298,12 +963,6 @@ Outputs:
     Value: !Sub "https://${AdminUIDistribution.DomainName}"
     Export:
       Name: !Sub pundit-${Environment}-admin-ui-url
-
-  BastionInstanceId:
-    Description: Bastion instance ID for SSM database tunnel
-    Value: !Ref BastionInstance
-    Export:
-      Name: !Sub pundit-${Environment}-bastion-id
 
   AuroraClusterEndpoint:
     Description: Aurora cluster endpoint for database connections
