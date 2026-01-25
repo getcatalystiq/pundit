@@ -66,7 +66,7 @@ def handler(event: dict, context: Any) -> dict:
     http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     headers = event.get("headers", {})
     raw_path = event.get("rawPath", "/mcp")
-    print(f"MCP request: method={http_method}, path={raw_path}, auth={'yes' if headers.get('authorization') else 'no'}")
+    logger.debug(f"MCP request: method={http_method}, path={raw_path}, auth={'yes' if headers.get('authorization') else 'no'}")
 
     # Handle GET (info/health)
     if http_method == "GET":
@@ -272,9 +272,13 @@ def _validate_session(session_id: Optional[str], token_claims: dict) -> dict:
     if not session:
         raise McpError(MCP_INVALID_SESSION, "Invalid or expired session")
 
-    # Verify session belongs to this user
+    # SECURITY: Verify session belongs to this user AND tenant
     if session["user_id"] != token_claims["sub"]:
         raise McpError(MCP_INVALID_SESSION, "Session does not belong to this user")
+
+    if session["tenant_id"] != token_claims["tenant_id"]:
+        logger.warning(f"Tenant mismatch: session={session['tenant_id']}, token={token_claims['tenant_id']}")
+        raise McpError(MCP_INVALID_SESSION, "Session does not belong to this tenant")
 
     # Update last activity
     aurora.execute(
@@ -300,6 +304,63 @@ def _handle_tools_list() -> dict:
     return create_tools_list(tool_list)
 
 
+def _validate_tool_arguments(arguments: dict, schema: dict) -> Optional[str]:
+    """
+    Validate tool arguments against JSON schema.
+
+    SECURITY: Validates that arguments match expected types and constraints
+    to prevent injection attacks and unexpected behavior.
+
+    Returns:
+        Error message if validation fails, None if valid
+    """
+    if not schema:
+        return None
+
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
+
+    # Check required fields
+    for field in required:
+        if field not in arguments:
+            return f"Missing required field: {field}"
+
+    # Validate field types
+    for field, value in arguments.items():
+        if field not in properties:
+            # Allow extra fields for flexibility, but log it
+            logger.debug(f"Unexpected field in tool arguments: {field}")
+            continue
+
+        prop_schema = properties[field]
+        expected_type = prop_schema.get("type")
+
+        if expected_type == "string":
+            if not isinstance(value, str):
+                return f"Field '{field}' must be a string"
+            # Check max length if specified
+            max_length = prop_schema.get("maxLength")
+            if max_length and len(value) > max_length:
+                return f"Field '{field}' exceeds max length of {max_length}"
+        elif expected_type == "integer":
+            if not isinstance(value, int) or isinstance(value, bool):
+                return f"Field '{field}' must be an integer"
+        elif expected_type == "number":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return f"Field '{field}' must be a number"
+        elif expected_type == "boolean":
+            if not isinstance(value, bool):
+                return f"Field '{field}' must be a boolean"
+        elif expected_type == "array":
+            if not isinstance(value, list):
+                return f"Field '{field}' must be an array"
+        elif expected_type == "object":
+            if not isinstance(value, dict):
+                return f"Field '{field}' must be an object"
+
+    return None
+
+
 def _handle_tools_call(params: dict, session: dict, token_claims: dict) -> dict:
     """Handle tools/call request."""
     tool_name = params.get("name")
@@ -322,6 +383,12 @@ def _handle_tools_call(params: dict, session: dict, token_claims: dict) -> dict:
             INVALID_REQUEST,
             f"Insufficient scope. Required: {required_scope}, has: {user_scopes}"
         )
+
+    # SECURITY: Validate arguments against input schema
+    input_schema = tool.get("input_schema", {})
+    validation_error = _validate_tool_arguments(arguments, input_schema)
+    if validation_error:
+        raise McpError(INVALID_REQUEST, f"Invalid arguments: {validation_error}")
 
     # Execute tool
     try:

@@ -7,11 +7,17 @@ Implements:
 - Authorization Code Grant with PKCE (RFC 7636)
 - Token endpoint
 - User signup/login
+
+SECURITY:
+- Only S256 PKCE method is supported
+- CORS origins are configurable via environment
+- Domain whitelist for auto-registration is configurable
 """
 
 import base64
 import json
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -31,31 +37,65 @@ from .users import authenticate_user, signup, get_user
 
 logger = logging.getLogger(__name__)
 
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-}
+# SECURITY: CORS origins from environment, defaults to restrictive list
+_ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "https://claude.ai,http://localhost:5173,http://localhost:3000"
+).split(",")
 
-# Allowed domains for automatic client registration (Just-in-Time DCR)
-ALLOWED_AUTO_REGISTER_DOMAINS = [
-    "claude.ai",
-    "localhost",
-    "127.0.0.1",
-    "3jn5r031x9.execute-api.us-east-1.amazonaws.com",  # Maven OAuth callback
-]
+
+def _get_cors_headers(origin: Optional[str] = None) -> dict:
+    """
+    Get CORS headers with origin validation.
+
+    SECURITY: Only allow explicitly configured origins.
+    """
+    # Check if origin is in allowed list
+    if origin and origin in _ALLOWED_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+
+    # For local development, allow localhost variants
+    if origin and (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Vary": "Origin",
+        }
+
+    # Default: no CORS (will block cross-origin requests)
+    return {
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+
+
+# SECURITY: Allowed domains for auto-registration from environment
+_ALLOWED_AUTO_REGISTER_DOMAINS = os.environ.get(
+    "ALLOWED_AUTO_REGISTER_DOMAINS",
+    "claude.ai,localhost,127.0.0.1"
+).split(",")
 
 
 def _is_allowed_auto_register_uri(redirect_uri: str) -> bool:
-    """Check if a redirect URI is allowed for automatic client registration."""
+    """
+    Check if a redirect URI is allowed for automatic client registration.
+
+    SECURITY: Only exact domain matches are allowed, no subdomain wildcards.
+    """
     from urllib.parse import urlparse
     parsed = urlparse(redirect_uri)
     hostname = parsed.hostname or ""
 
-    for domain in ALLOWED_AUTO_REGISTER_DOMAINS:
-        if hostname == domain or hostname.endswith(f".{domain}"):
-            return True
-    return False
+    # SECURITY: Exact match only, no subdomain wildcards to prevent
+    # attacker.claude.ai type attacks
+    return hostname in _ALLOWED_AUTO_REGISTER_DOMAINS
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -83,9 +123,10 @@ def handler(event: dict, context: Any) -> dict:
     else:
         path = raw_path
 
-    logger.info(f"OAuth request: method={http_method}, raw_path={raw_path}, path={path}")
+    logger.info(f"OAuth request: method={http_method}, path={path}")
 
     headers = event.get("headers", {})
+    origin = headers.get("origin") or headers.get("Origin")
     query_params = event.get("queryStringParameters", {}) or {}
     body = event.get("body", "")
 
@@ -109,19 +150,19 @@ def handler(event: dict, context: Any) -> dict:
         if http_method == "OPTIONS":
             return {
                 "statusCode": 204,
-                "headers": CORS_HEADERS,
+                "headers": _get_cors_headers(origin),
                 "body": "",
             }
 
         # Route to handler
         if path == "/.well-known/oauth-authorization-server":
-            return _handle_metadata(event)
+            return _handle_metadata(event, origin)
 
         elif path == "/.well-known/oauth-protected-resource":
-            return _handle_protected_resource_metadata(event)
+            return _handle_protected_resource_metadata(event, origin)
 
         elif path == "/oauth/register" and http_method == "POST":
-            return _handle_register(body_params)
+            return _handle_register(body_params, origin)
 
         elif path in ["/oauth/authorize", "/authorize"] and http_method == "GET":
             return _handle_authorize_get(query_params)
@@ -130,29 +171,29 @@ def handler(event: dict, context: Any) -> dict:
             return _handle_authorize_post(body_params, query_params)
 
         elif path in ["/oauth/token", "/token"] and http_method == "POST":
-            return _handle_token(body_params, headers)
+            return _handle_token(body_params, headers, origin)
 
         elif path == "/oauth/userinfo" and http_method == "GET":
-            return _handle_userinfo(headers)
+            return _handle_userinfo(headers, origin)
 
         elif path == "/signup" and http_method == "POST":
-            return _handle_signup(body_params)
+            return _handle_signup(body_params, origin)
 
         elif path == "/login" and http_method == "POST":
-            return _handle_login(body_params)
+            return _handle_login(body_params, origin)
 
         else:
-            return _error_response(404, "not_found", "Endpoint not found")
+            return _error_response(404, "not_found", "Endpoint not found", origin)
 
     except ValueError as e:
         logger.warning(f"Validation error: {e}")
-        return _error_response(400, "invalid_request", str(e))
+        return _error_response(400, "invalid_request", str(e), origin)
     except Exception as e:
         logger.exception(f"OAuth error: {e}")
-        return _error_response(500, "server_error", "Internal server error")
+        return _error_response(500, "server_error", "Internal server error", origin)
 
 
-def _handle_metadata(event: dict) -> dict:
+def _handle_metadata(event: dict, origin: Optional[str] = None) -> dict:
     """
     Return OAuth Authorization Server Metadata (RFC 8414).
 
@@ -177,13 +218,14 @@ def _handle_metadata(event: dict) -> dict:
             "none"
         ],
         "scopes_supported": ["read", "write", "admin"],
-        "code_challenge_methods_supported": ["S256", "plain"],
+        # SECURITY: Only S256 is supported
+        "code_challenge_methods_supported": ["S256"],
 
         # RFC 7591 - Dynamic Client Registration
         "registration_endpoint": f"{issuer}/oauth/register",
 
         # Additional metadata
-        "service_documentation": "https://pundit.dev/docs",
+        "service_documentation": "https://github.com/getcatalystiq/pundit",
         "ui_locales_supported": ["en"],
     }
 
@@ -192,13 +234,13 @@ def _handle_metadata(event: dict) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Cache-Control": "max-age=3600",
-            **CORS_HEADERS,
+            **_get_cors_headers(origin),
         },
         "body": json.dumps(metadata),
     }
 
 
-def _handle_protected_resource_metadata(event: dict) -> dict:
+def _handle_protected_resource_metadata(event: dict, origin: Optional[str] = None) -> dict:
     """
     Return OAuth Protected Resource Metadata (RFC 9728).
 
@@ -218,13 +260,13 @@ def _handle_protected_resource_metadata(event: dict) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Cache-Control": "max-age=3600",
-            **CORS_HEADERS,
+            **_get_cors_headers(origin),
         },
         "body": json.dumps(metadata),
     }
 
 
-def _handle_register(params: dict) -> dict:
+def _handle_register(params: dict, origin: Optional[str] = None) -> dict:
     """Handle Dynamic Client Registration (RFC 7591)."""
     result = register_client(
         client_name=params.get("client_name", ""),
@@ -236,9 +278,11 @@ def _handle_register(params: dict) -> dict:
         scope=params.get("scope"),
     )
 
+    logger.info(f"Registered OAuth client: {result.get('client_id')}")
+
     return {
         "statusCode": 201,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+        "headers": {"Content-Type": "application/json", **_get_cors_headers(origin)},
         "body": json.dumps(result),
     }
 
@@ -259,17 +303,17 @@ def _handle_authorize_get(params: dict) -> dict:
     code_challenge_method = params.get("code_challenge_method", "S256")
 
     if response_type != "code":
-        return _error_response(400, "unsupported_response_type", "Only 'code' response type is supported")
+        return _error_response(400, "unsupported_response_type", "Only 'code' response type is supported", None)
 
     if not redirect_uri:
-        return _error_response(400, "invalid_request", "redirect_uri is required")
+        return _error_response(400, "invalid_request", "redirect_uri is required", None)
 
     # Auto-register client if not provided or doesn't exist (Just-in-Time DCR)
     existing_client = get_client(client_id) if client_id else None
     if not existing_client:
         # Only allow auto-registration for known callback domains
         if not _is_allowed_auto_register_uri(redirect_uri):
-            return _error_response(400, "invalid_request", "redirect_uri not allowed for auto-registration")
+            return _error_response(400, "invalid_request", "redirect_uri not allowed for auto-registration", None)
 
         try:
             result = register_client(
@@ -281,15 +325,15 @@ def _handle_authorize_get(params: dict) -> dict:
             client_id = result["client_id"]
             logger.info(f"Auto-registered client {client_id} for {redirect_uri}")
         except ValueError as e:
-            return _error_response(400, "invalid_request", str(e))
+            return _error_response(400, "invalid_request", str(e), None)
     else:
         # Validate redirect_uri for existing clients
         if not validate_redirect_uri(client_id, redirect_uri):
-            return _error_response(400, "invalid_request", "Invalid redirect_uri for this client")
+            return _error_response(400, "invalid_request", "Invalid redirect_uri for this client", None)
 
     # PKCE is required
     if not code_challenge:
-        return _error_response(400, "invalid_request", "code_challenge is required (PKCE)")
+        return _error_response(400, "invalid_request", "code_challenge is required (PKCE)", None)
 
     # Return login form
     html = _render_login_form(
@@ -327,7 +371,7 @@ def _handle_authorize_post(body_params: dict, query_params: dict) -> dict:
     password = body_params.get("password")
 
     if not email or not password:
-        return _error_response(400, "invalid_request", "Email and password are required")
+        return _error_response(400, "invalid_request", "Email and password are required", None)
 
     # Authenticate user
     user = authenticate_user(email, password)
@@ -397,7 +441,7 @@ def _handle_authorize_post(body_params: dict, query_params: dict) -> dict:
     }
 
 
-def _handle_token(params: dict, headers: dict) -> dict:
+def _handle_token(params: dict, headers: dict, origin: Optional[str] = None) -> dict:
     """
     Handle token endpoint requests.
 
@@ -411,24 +455,24 @@ def _handle_token(params: dict, headers: dict) -> dict:
     client_id, client_secret = _extract_client_credentials(params, headers)
 
     if grant_type == "authorization_code":
-        return _handle_authorization_code_grant(params, client_id, client_secret)
+        return _handle_authorization_code_grant(params, client_id, client_secret, origin)
     elif grant_type == "refresh_token":
-        return _handle_refresh_token_grant(params, client_id, client_secret)
+        return _handle_refresh_token_grant(params, client_id, client_secret, origin)
     else:
-        return _error_response(400, "unsupported_grant_type", f"Grant type '{grant_type}' is not supported")
+        return _error_response(400, "unsupported_grant_type", f"Grant type '{grant_type}' is not supported", origin)
 
 
-def _handle_authorization_code_grant(params: dict, client_id: str, client_secret: Optional[str]) -> dict:
+def _handle_authorization_code_grant(params: dict, client_id: str, client_secret: Optional[str], origin: Optional[str] = None) -> dict:
     """Exchange authorization code for tokens."""
     code = params.get("code")
     redirect_uri = params.get("redirect_uri")
     code_verifier = params.get("code_verifier")
 
     if not code:
-        return _error_response(400, "invalid_request", "code is required")
+        return _error_response(400, "invalid_request", "code is required", origin)
 
     if not code_verifier:
-        return _error_response(400, "invalid_request", "code_verifier is required (PKCE)")
+        return _error_response(400, "invalid_request", "code_verifier is required (PKCE)", origin)
 
     # Look up authorization code
     aurora = get_aurora_client()
@@ -443,7 +487,7 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
     )
 
     if not auth_code:
-        return _error_response(400, "invalid_grant", "Invalid authorization code")
+        return _error_response(400, "invalid_grant", "Invalid authorization code", origin)
 
     # Check if code is expired
     expires_at = auth_code.get("expires_at")
@@ -458,19 +502,19 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at < datetime.now(timezone.utc):
-        return _error_response(400, "invalid_grant", "Authorization code has expired")
+        return _error_response(400, "invalid_grant", "Authorization code has expired", origin)
 
     # Check if code was already used
     if auth_code.get("used_at"):
-        return _error_response(400, "invalid_grant", "Authorization code has already been used")
+        return _error_response(400, "invalid_grant", "Authorization code has already been used", origin)
 
     # Verify client_id matches
     if auth_code["client_id"] != client_id:
-        return _error_response(400, "invalid_grant", "Client ID mismatch")
+        return _error_response(400, "invalid_grant", "Client ID mismatch", origin)
 
     # Verify redirect_uri matches
     if redirect_uri and auth_code["redirect_uri"] != redirect_uri:
-        return _error_response(400, "invalid_grant", "Redirect URI mismatch")
+        return _error_response(400, "invalid_grant", "Redirect URI mismatch", origin)
 
     # Verify PKCE code_verifier
     if not verify_code_challenge(
@@ -478,13 +522,13 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
         auth_code["code_challenge"],
         auth_code.get("code_challenge_method", "S256")
     ):
-        return _error_response(400, "invalid_grant", "Invalid code_verifier")
+        return _error_response(400, "invalid_grant", "Invalid code_verifier", origin)
 
     # Verify client secret (for confidential clients)
     client = get_client(client_id)
     if client and client.get("client_secret_hash"):
         if not client_secret or not verify_client_secret(client_id, client_secret):
-            return _error_response(401, "invalid_client", "Invalid client credentials")
+            return _error_response(401, "invalid_client", "Invalid client credentials", origin)
 
     # Mark code as used
     aurora.execute(
@@ -495,7 +539,7 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
     # Get user info
     user = get_user(auth_code["user_id"])
     if not user:
-        return _error_response(400, "invalid_grant", "User not found")
+        return _error_response(400, "invalid_grant", "User not found", origin)
 
     # Generate tokens
     scopes = auth_code["scope"].split()
@@ -520,7 +564,7 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
-            **CORS_HEADERS,
+            **_get_cors_headers(origin),
         },
         "body": json.dumps({
             "access_token": access_token,
@@ -532,27 +576,27 @@ def _handle_authorization_code_grant(params: dict, client_id: str, client_secret
     }
 
 
-def _handle_refresh_token_grant(params: dict, client_id: str, client_secret: Optional[str]) -> dict:
+def _handle_refresh_token_grant(params: dict, client_id: str, client_secret: Optional[str], origin: Optional[str] = None) -> dict:
     """Exchange refresh token for new tokens."""
     refresh_token = params.get("refresh_token")
 
     if not refresh_token:
-        return _error_response(400, "invalid_request", "refresh_token is required")
+        return _error_response(400, "invalid_request", "refresh_token is required", origin)
 
     # Verify refresh token
     token_data = verify_refresh_token(refresh_token)
     if not token_data:
-        return _error_response(400, "invalid_grant", "Invalid or expired refresh token")
+        return _error_response(400, "invalid_grant", "Invalid or expired refresh token", origin)
 
     # Verify client_id matches
     if token_data["client_id"] != client_id:
-        return _error_response(400, "invalid_grant", "Client ID mismatch")
+        return _error_response(400, "invalid_grant", "Client ID mismatch", origin)
 
     # Verify client secret (for confidential clients)
     client = get_client(client_id)
     if client and client.get("client_secret_hash"):
         if not client_secret or not verify_client_secret(client_id, client_secret):
-            return _error_response(401, "invalid_client", "Invalid client credentials")
+            return _error_response(401, "invalid_client", "Invalid client credentials", origin)
 
     # Revoke old refresh token
     revoke_refresh_token(refresh_token)
@@ -578,7 +622,7 @@ def _handle_refresh_token_grant(params: dict, client_id: str, client_secret: Opt
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
-            **CORS_HEADERS,
+            **_get_cors_headers(origin),
         },
         "body": json.dumps({
             "access_token": access_token,
@@ -590,26 +634,26 @@ def _handle_refresh_token_grant(params: dict, client_id: str, client_secret: Opt
     }
 
 
-def _handle_userinfo(headers: dict) -> dict:
+def _handle_userinfo(headers: dict, origin: Optional[str] = None) -> dict:
     """Return user information for the authenticated user."""
     from .tokens import get_token_claims
 
     auth_header = headers.get("authorization") or headers.get("Authorization")
     if not auth_header:
-        return _error_response(401, "invalid_token", "Missing Authorization header")
+        return _error_response(401, "invalid_token", "Missing Authorization header", origin)
 
     try:
         claims = get_token_claims(auth_header)
     except Exception as e:
-        return _error_response(401, "invalid_token", str(e))
+        return _error_response(401, "invalid_token", str(e), origin)
 
     user = get_user(claims["sub"])
     if not user:
-        return _error_response(404, "not_found", "User not found")
+        return _error_response(404, "not_found", "User not found", origin)
 
     return {
         "statusCode": 200,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+        "headers": {"Content-Type": "application/json", **_get_cors_headers(origin)},
         "body": json.dumps({
             "sub": user["id"],
             "email": user["email"],
@@ -623,7 +667,7 @@ def _handle_userinfo(headers: dict) -> dict:
     }
 
 
-def _handle_signup(params: dict) -> dict:
+def _handle_signup(params: dict, origin: Optional[str] = None) -> dict:
     """Handle self-service tenant signup."""
     result = signup(
         tenant_name=params.get("tenant_name", ""),
@@ -634,7 +678,7 @@ def _handle_signup(params: dict) -> dict:
 
     return {
         "statusCode": 201,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+        "headers": {"Content-Type": "application/json", **_get_cors_headers(origin)},
         "body": json.dumps({
             "tenant": {
                 "id": result["tenant"]["id"],
@@ -651,17 +695,17 @@ def _handle_signup(params: dict) -> dict:
     }
 
 
-def _handle_login(params: dict) -> dict:
+def _handle_login(params: dict, origin: Optional[str] = None) -> dict:
     """Handle direct login (for testing/API access)."""
     email = params.get("email")
     password = params.get("password")
 
     if not email or not password:
-        return _error_response(400, "invalid_request", "email and password are required")
+        return _error_response(400, "invalid_request", "email and password are required", origin)
 
     user = authenticate_user(email, password)
     if not user:
-        return _error_response(401, "invalid_credentials", "Invalid email or password")
+        return _error_response(401, "invalid_credentials", "Invalid email or password", origin)
 
     # Generate tokens
     access_token = create_access_token(
@@ -673,7 +717,7 @@ def _handle_login(params: dict) -> dict:
 
     return {
         "statusCode": 200,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+        "headers": {"Content-Type": "application/json", **_get_cors_headers(origin)},
         "body": json.dumps({
             "access_token": access_token,
             "token_type": "Bearer",
@@ -817,11 +861,15 @@ def _render_login_form(
 </html>"""
 
 
-def _error_response(status_code: int, error: str, description: str) -> dict:
+def _error_response(status_code: int, error: str, description: str, origin: Optional[str] = None) -> dict:
     """Return OAuth error response."""
+    # SECURITY: Don't leak internal error details
+    if status_code >= 500:
+        description = "Internal server error"
+
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+        "headers": {"Content-Type": "application/json", **_get_cors_headers(origin)},
         "body": json.dumps({
             "error": error,
             "error_description": description,

@@ -588,7 +588,7 @@ def _test_connection(tenant_id: str, database_id: str) -> dict:
 
 def _list_ddl(tenant_id: str, database_id: str) -> dict:
     """List DDL entries for a database."""
-    print(f"[DDL] _list_ddl called: tenant_id={tenant_id}, database_id={database_id}")
+    logger.debug(f"_list_ddl called: tenant_id={tenant_id}, database_id={database_id}")
     aurora = get_aurora_client()
     entries = aurora.query(
         """
@@ -602,21 +602,21 @@ def _list_ddl(tenant_id: str, database_id: str) -> dict:
             param("database_id", database_id, "UUID"),
         ]
     )
-    print(f"[DDL] _list_ddl returning {len(entries)} entries")
+    logger.debug(f"_list_ddl returning {len(entries)} entries")
     return _success_response({"ddl": entries})
 
 
 def _add_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
     """Add DDL entry with embedding."""
-    print(f"[DDL] _add_ddl called: tenant_id={tenant_id}, database_id={database_id}")
+    logger.debug(f"_add_ddl called: tenant_id={tenant_id}, database_id={database_id}")
     ddl = data.get("ddl")
     if not ddl:
         return _error_response(400, "ddl is required")
 
     # Generate embedding
-    print(f"[DDL] Generating embedding for DDL ({len(ddl)} chars)")
+    logger.debug(f"Generating embedding for DDL ({len(ddl)} chars)")
     embedding = generate_embedding(ddl)
-    print(f"[DDL] Embedding generated: {len(embedding)} dimensions")
+    logger.debug(f"Embedding generated: {len(embedding)} dimensions")
 
     aurora = get_aurora_client()
     result = aurora.query_one(
@@ -632,7 +632,7 @@ def _add_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
             param("embedding", json.dumps(embedding)),
         ]
     )
-    print(f"[DDL] DDL inserted with id={result['id']}")
+    logger.debug(f"DDL inserted with id={result['id']}")
 
     return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
 

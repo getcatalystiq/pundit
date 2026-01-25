@@ -1,4 +1,7 @@
-"""User and tenant management."""
+"""User and tenant management.
+
+SECURITY: Password requirements and email validation enforced.
+"""
 
 import logging
 import re
@@ -10,6 +13,48 @@ import bcrypt
 from db.aurora import get_aurora_client, param
 
 logger = logging.getLogger(__name__)
+
+# Email validation regex (RFC 5322 simplified)
+EMAIL_REGEX = re.compile(
+    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+)
+
+# Password requirements
+MIN_PASSWORD_LENGTH = 12
+PASSWORD_REQUIREMENTS = (
+    f"Password must be at least {MIN_PASSWORD_LENGTH} characters and contain "
+    "at least one uppercase letter, one lowercase letter, and one number."
+)
+
+
+def _validate_email(email: str) -> bool:
+    """Validate email format."""
+    if not email or len(email) > 254:
+        return False
+    return EMAIL_REGEX.match(email) is not None
+
+
+def _validate_password(password: str) -> tuple[bool, str]:
+    """
+    Validate password meets security requirements.
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not password:
+        return False, "Password is required"
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, PASSWORD_REQUIREMENTS
+
+    has_upper = any(c.isupper() for c in password)
+    has_lower = any(c.islower() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+
+    if not (has_upper and has_lower and has_digit):
+        return False, PASSWORD_REQUIREMENTS
+
+    return True, ""
 
 
 def create_tenant(
@@ -33,6 +78,9 @@ def create_tenant(
 
     if not email:
         raise ValueError("email is required")
+
+    if not _validate_email(email):
+        raise ValueError("Invalid email format")
 
     # Generate slug if not provided
     if not slug:
@@ -94,8 +142,12 @@ def create_user(
     if not email:
         raise ValueError("email is required")
 
-    if not password or len(password) < 8:
-        raise ValueError("password must be at least 8 characters")
+    if not _validate_email(email):
+        raise ValueError("Invalid email format")
+
+    is_valid, error_msg = _validate_password(password)
+    if not is_valid:
+        raise ValueError(error_msg)
 
     # Hash password
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()

@@ -11,7 +11,7 @@ const footerLinks = {
     { label: 'Documentation', href: 'https://docs.pundit.dev', external: true },
     { label: 'API Reference', href: 'https://docs.pundit.dev/api', external: true },
     { label: 'Status', href: '#' },
-    { label: 'GitHub', href: 'https://github.com/pundit-dev', external: true },
+    { label: 'GitHub', href: 'https://github.com/getcatalystiq/pundit', external: true },
   ],
   company: [
     { label: 'About', href: '#' },
@@ -123,7 +123,7 @@ export function Footer() {
               </svg>
             </a>
             <a
-              href="https://github.com/pundit-dev"
+              href="https://github.com/getcatalystiq/pundit"
               target="_blank"
               rel="noopener noreferrer"
               className="text-gray-400 hover:text-white transition-colors"

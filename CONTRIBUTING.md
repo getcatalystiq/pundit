@@ -16,7 +16,7 @@ Thanks for your interest in contributing to Pundit!
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_ORG/pundit.git
+git clone https://github.com/getcatalystiq/pundit.git
 cd pundit
 
 # Start local development (PostgreSQL + SAM API + Admin UI)

@@ -35,7 +35,7 @@ class AIGenerator:
 
     def _invoke(self, prompt: str, max_tokens: int = 4096) -> str:
         """Invoke Claude via Bedrock."""
-        print(f"[AI] Invoking model: {MODEL_ID}")
+        logger.debug(f"Invoking model: {MODEL_ID}")
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
@@ -49,12 +49,12 @@ class AIGenerator:
                 accept="application/json",
                 body=json.dumps(body),
             )
-            print(f"[AI] Model invoked successfully")
+            logger.debug("Model invoked successfully")
 
             result = json.loads(response["body"].read())
             return result["content"][0]["text"]
         except Exception as e:
-            print(f"[AI] Error invoking model: {type(e).__name__}: {e}")
+            logger.exception(f"Error invoking model: {type(e).__name__}: {e}")
             raise
 
     def generate_documentation(

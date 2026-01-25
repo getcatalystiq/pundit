@@ -18,6 +18,10 @@ from utils.secrets import get_tenant_db_credentials
 
 logger = logging.getLogger(__name__)
 
+# SECURITY: Query timeout to prevent long-running queries from consuming resources
+DEFAULT_QUERY_TIMEOUT_SECONDS = 30
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+
 
 @dataclass
 class DatabaseConfig:
@@ -95,17 +99,24 @@ class TenantDatabaseConnection:
         self._connection = None
 
     def _create_connection(self):
-        """Create database connection based on type."""
+        """
+        Create database connection based on type.
+
+        SECURITY: All connections have timeout limits to prevent resource exhaustion.
+        """
         if self.db_type == "postgresql":
             import psycopg2
 
-            return psycopg2.connect(
+            conn = psycopg2.connect(
                 host=self.connection_config.get("host", self.credentials.get("host")),
                 port=self.connection_config.get("port", self.credentials.get("port", 5432)),
                 database=self.connection_config.get("database", self.credentials.get("database")),
                 user=self.credentials.get("username", self.credentials.get("user")),
                 password=self.credentials.get("password"),
+                connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                options=f"-c statement_timeout={DEFAULT_QUERY_TIMEOUT_SECONDS * 1000}",
             )
+            return conn
 
         elif self.db_type == "mysql":
             import pymysql
@@ -117,6 +128,9 @@ class TenantDatabaseConnection:
                 user=self.credentials.get("username", self.credentials.get("user")),
                 password=self.credentials.get("password"),
                 cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
+                write_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
             )
 
         elif self.db_type == "snowflake":
@@ -129,26 +143,35 @@ class TenantDatabaseConnection:
                 database=self.connection_config.get("database", self.credentials.get("database")),
                 warehouse=self.connection_config.get("warehouse", self.credentials.get("warehouse")),
                 schema=self.connection_config.get("schema", "PUBLIC"),
+                login_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                network_timeout=DEFAULT_QUERY_TIMEOUT_SECONDS,
             )
 
         elif self.db_type == "bigquery":
             from google.cloud import bigquery
             from google.oauth2 import service_account
             import tempfile
+            import os
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 json.dump(self.credentials, f)
                 cred_path = f.name
 
-            credentials = service_account.Credentials.from_service_account_file(cred_path)
-            project_id = self.connection_config.get("project_id", self.credentials.get("project_id"))
-            return bigquery.Client(credentials=credentials, project=project_id)
+            try:
+                credentials = service_account.Credentials.from_service_account_file(cred_path)
+                project_id = self.connection_config.get("project_id", self.credentials.get("project_id"))
+                # Store timeout for use in query execution
+                self._bigquery_timeout = DEFAULT_QUERY_TIMEOUT_SECONDS
+                return bigquery.Client(credentials=credentials, project=project_id)
+            finally:
+                # Clean up temp file
+                os.unlink(cred_path)
 
         elif self.db_type == "sqlite":
             import sqlite3
 
             db_path = self.connection_config.get("database_path", ":memory:")
-            return sqlite3.connect(db_path)
+            return sqlite3.connect(db_path, timeout=DEFAULT_QUERY_TIMEOUT_SECONDS)
 
         else:
             raise ValueError(f"Unsupported database type: {self.db_type}")
@@ -204,9 +227,14 @@ class TenantDatabaseConnection:
         )
 
     def _execute_bigquery(self, sql: str, max_rows: int) -> QueryResult:
-        """Execute SQL using BigQuery client."""
-        query_job = self.connection.query(sql)
-        results = query_job.result()
+        """Execute SQL using BigQuery client with timeout."""
+        from google.cloud.bigquery import QueryJobConfig
+
+        job_config = QueryJobConfig()
+        # Use stored timeout or default
+        timeout = getattr(self, "_bigquery_timeout", DEFAULT_QUERY_TIMEOUT_SECONDS)
+        query_job = self.connection.query(sql, job_config=job_config)
+        results = query_job.result(timeout=timeout)
 
         columns = [field.name for field in results.schema]
         data = []
