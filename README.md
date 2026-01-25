@@ -322,6 +322,8 @@ Response:
 
 The Admin UI is a React 19 + Vite + TypeScript single-page application for managing databases and training data.
 
+![Admin UI Screenshot](docs/images/admin-ui-screenshot.png)
+
 ### Development
 
 ```bash
