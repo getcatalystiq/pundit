@@ -16,18 +16,16 @@ interface PricingTier {
 
 const tiers: PricingTier[] = [
   {
-    name: 'Free',
+    name: 'Community',
     price: '$0',
     period: 'forever',
-    description: 'Perfect for trying out Pundit with a single database.',
+    description: 'Open source and free for the community.',
     features: [
-      '1 database connection',
-      '100 queries per day',
       'Basic RAG training',
       'Community support',
       'Standard response time',
     ],
-    cta: 'Get Started Free',
+    cta: 'Get Started',
     ctaLink: '/login',
   },
   {
