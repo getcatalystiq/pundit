@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 
 const sqlQuery = `SELECT
   DATE_TRUNC('month', created_at) as month,
@@ -104,23 +103,12 @@ export function Hero() {
 
             {/* CTAs */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start animate-fade-in-up animation-delay-200">
-              <Button size="lg" className="text-base px-8 py-6 shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-shadow" asChild>
-                <Link to="/login">
-                  Try Pundit Free
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </Button>
               <Button size="lg" variant="outline" className="text-base px-8 py-6 border-white/40 bg-white/10 text-white hover:bg-white/20 hover:text-white hover:border-white/60" asChild>
                 <a href="https://docs.pundit.dev" target="_blank" rel="noopener noreferrer">
                   View Documentation
                 </a>
               </Button>
             </div>
-
-            {/* Trust indicator */}
-            <p className="text-sm text-gray-500 mt-8 animate-fade-in-up animation-delay-300">
-              No credit card required. Start querying in minutes.
-            </p>
           </div>
 
           {/* Right column - Code mockup */}
