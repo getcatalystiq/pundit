@@ -1,0 +1,1152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Pundit - Standalone MCP Server for Database Tools
+  OAuth 2.1 with PKCE, Streamable HTTP transport, OpenAI embeddings
+
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 1024
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+        AURORA_SECRET_ARN: !Ref AuroraSecret
+        AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
+        AURORA_DATABASE: pundit
+        OPENAI_SECRET_ARN: !Ref OpenAISecret
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  AuroraMinCapacity:
+    Type: Number
+    Default: 0.5
+    Description: Minimum ACUs for Aurora Serverless v2
+
+  AuroraMaxCapacity:
+    Type: Number
+    Default: 4
+    Description: Maximum ACUs for Aurora Serverless v2
+
+Resources:
+  #############################################################################
+  # VPC Infrastructure
+  #############################################################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-public-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-public-2
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-private-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.12.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-private-2
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-nat-eip
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-nat
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-public-rt
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-private-rt
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Pundit Aurora
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-db-subnet-group
+
+  #############################################################################
+  # Security Groups
+  #############################################################################
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Pundit Lambda functions
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrBlock: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-lambda-sg
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Pundit Aurora cluster
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-aurora-sg
+
+  AuroraSecurityGroupLambdaIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  #############################################################################
+  # Aurora Serverless v2
+  #############################################################################
+  AuroraSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub pundit-${Environment}-aurora-credentials
+      Description: Aurora credentials for Pundit
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "pundit_admin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub pundit-${Environment}-cluster
+      Engine: aurora-postgresql
+      EngineVersion: '16.4'
+      DatabaseName: pundit
+      MasterUsername: !Sub '{{resolve:secretsmanager:${AuroraSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${AuroraSecret}:SecretString:password}}'
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref AuroraMinCapacity
+        MaxCapacity: !Ref AuroraMaxCapacity
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      EnableHttpEndpoint: true
+      StorageEncrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-cluster
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub pundit-${Environment}-instance-1
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-instance-1
+
+  AuroraSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref AuroraSecret
+      TargetId: !Ref AuroraCluster
+      TargetType: AWS::RDS::DBCluster
+
+  #############################################################################
+  # OpenAI API Key Secret (must be populated manually)
+  #############################################################################
+  OpenAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub pundit-${Environment}-openai-api-key
+      Description: OpenAI API key for embeddings (populate manually)
+      SecretString: '{"api_key": "REPLACE_ME"}'
+
+  #############################################################################
+  # API Gateway (HTTP API for MCP + OAuth)
+  #############################################################################
+  ApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      DisableExecuteApiEndpoint: false
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - Mcp-Session-Id
+        ExposeHeaders:
+          - Mcp-Session-Id
+
+  #############################################################################
+  # Lambda Functions
+  #############################################################################
+
+  # OAuth Server Function
+  OAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - oauth.server.handler
+      Description: OAuth 2.1 server (DCR, authorize, token, metadata)
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref AuroraSecret
+                - !Ref OpenAISecret
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+      Events:
+        OAuthMetadata:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /.well-known/oauth-authorization-server
+            Method: GET
+        OAuthProtectedResource:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /.well-known/oauth-protected-resource
+            Method: GET
+        OAuthRegister:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /oauth/register
+            Method: POST
+        OAuthAuthorize:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /oauth/authorize
+            Method: GET
+        OAuthAuthorizePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /oauth/authorize
+            Method: POST
+        OAuthToken:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /oauth/token
+            Method: POST
+        AuthorizeGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /authorize
+            Method: GET
+        AuthorizePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /authorize
+            Method: POST
+        Token:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /token
+            Method: POST
+        OAuthUserInfo:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /oauth/userinfo
+            Method: GET
+        TenantSignup:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /signup
+            Method: POST
+        TenantLogin:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /login
+            Method: POST
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
+
+  # Tenant Admin Function
+  TenantAdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - admin.tenant.handler
+      Description: Tenant admin API (OAuth authenticated, manage own tenant)
+      Timeout: 900
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+          AllowHeaders:
+            - Content-Type
+            - Authorization
+          MaxAge: 86400
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:CreateSecret
+                - secretsmanager:PutSecretValue
+                - secretsmanager:DescribeSecret
+                - secretsmanager:DeleteSecret
+              Resource:
+                - !Ref AuroraSecret
+                - !Ref OpenAISecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:pundit-${Environment}-tenant-db-*
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-*
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+                - arn:aws:bedrock:*::foundation-model/anthropic.claude-*
+      Events:
+        AdminListDatabases:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases
+            Method: GET
+        AdminGetDatabase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}
+            Method: GET
+        AdminCreateDatabase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases
+            Method: POST
+        AdminUpdateDatabase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}
+            Method: PUT
+        AdminDeleteDatabase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}
+            Method: DELETE
+        AdminListDDL:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ddl
+            Method: GET
+        AdminAddDDL:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ddl
+            Method: POST
+        AdminDeleteDDL:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ddl/{id}
+            Method: DELETE
+        AdminListDocs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/docs
+            Method: GET
+        AdminAddDoc:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/docs
+            Method: POST
+        AdminDeleteDoc:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/docs/{id}
+            Method: DELETE
+        AdminListExamples:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/examples
+            Method: GET
+        AdminAddExample:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/examples
+            Method: POST
+        AdminDeleteExample:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/examples/{id}
+            Method: DELETE
+        AdminListTextMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/text-memory
+            Method: GET
+        AdminAddTextMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/text-memory
+            Method: POST
+        AdminDeleteTextMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/text-memory/{id}
+            Method: DELETE
+        AdminListToolMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/tool-memory
+            Method: GET
+        AdminAddToolMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/tool-memory
+            Method: POST
+        AdminDeleteToolMemory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/tool-memory/{id}
+            Method: DELETE
+        AdminListUsers:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/users
+            Method: GET
+        AdminCreateUser:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/users
+            Method: POST
+        AdminUpdateUser:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/users/{user_id}
+            Method: PUT
+        AdminDeleteUser:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/users/{user_id}
+            Method: DELETE
+        AdminAIPullDDL:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ai/pull-ddl
+            Method: POST
+        AdminAIGenerateDocs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ai/generate-docs
+            Method: POST
+        AdminAIGenerateExamples:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ai/generate-examples
+            Method: POST
+        AdminAIAnalyze:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/ai/analyze
+            Method: POST
+        AdminTestConnection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /admin/databases/{database_id}/test-connection
+            Method: POST
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
+
+  # MCP Server Function
+  McpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - mcp.server.handler
+      Description: MCP server with Streamable HTTP transport
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          CHARTS_BUCKET: !Ref ChartsBucket
+          CHARTS_CDN_URL: !Sub "https://${ChartsDistribution.DomainName}"
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref AuroraSecret
+                - !Ref OpenAISecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:pundit-${Environment}-tenant-db-*
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub ${ChartsBucket.Arn}/*
+      Events:
+        McpEndpoint:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /mcp
+            Method: POST
+        McpSession:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /mcp
+            Method: GET
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
+
+  # Database Migration Function
+  MigrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - migrate.handler
+      Description: Database migration runner
+      Timeout: 300
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref AuroraSecret
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
+
+  #############################################################################
+  # Platform Admin API (IAM Authentication)
+  #############################################################################
+  PlatformAdminApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub pundit-${Environment}-platform-admin
+      StageName: !Ref Environment
+      Auth:
+        DefaultAuthorizer: AWS_IAM
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Amz-Security-Token'"
+
+  PlatformAdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - admin.platform.handler
+      Description: Platform admin API (IAM authenticated)
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:CreateSecret
+                - secretsmanager:UpdateSecret
+                - secretsmanager:DeleteSecret
+              Resource:
+                - !Ref AuroraSecret
+                - !Ref OpenAISecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:pundit-${Environment}-*
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+      Events:
+        ListTenants:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants
+            Method: GET
+        GetTenant:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}
+            Method: GET
+        CreateTenant:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants
+            Method: POST
+        UpdateTenant:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}
+            Method: PUT
+        DeleteTenant:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}
+            Method: DELETE
+        ListDatabases:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases
+            Method: GET
+        CreateDatabase:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases
+            Method: POST
+        UpdateDatabase:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases/{database_id}
+            Method: PUT
+        DeleteDatabase:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases/{database_id}
+            Method: DELETE
+        ListTrainingData:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases/{database_id}/training
+            Method: GET
+        AddTrainingData:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases/{database_id}/training
+            Method: POST
+        DeleteTrainingData:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/databases/{database_id}/training/{type}/{id}
+            Method: DELETE
+        GetMetrics:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /metrics
+            Method: GET
+        GetTenantMetrics:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PlatformAdminApi
+            Path: /tenants/{tenant_id}/metrics
+            Method: GET
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile
+      DockerTag: !Ref Environment
+
+  #############################################################################
+  # Charts Storage - S3 + CloudFront
+  #############################################################################
+  ChartsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pundit-${Environment}-charts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldCharts
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-charts
+
+  ChartsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ChartsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${ChartsBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ChartsDistribution}
+
+  ChartsOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub pundit-${Environment}-charts-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ChartsDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub Pundit Charts - ${Environment}
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ChartsBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref ChartsOAC
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-charts
+
+  #############################################################################
+  # Admin UI - S3 + CloudFront
+  #############################################################################
+  AdminUIBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pundit-${Environment}-admin-ui-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-admin-ui
+
+  AdminUIBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AdminUIBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${AdminUIBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminUIDistribution}
+
+  AdminUIOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub pundit-${Environment}-admin-ui-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  AdminUIDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub Pundit Admin UI - ${Environment}
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt AdminUIBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref AdminUIOAC
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+      Tags:
+        - Key: Name
+          Value: !Sub pundit-${Environment}-admin-ui
+
+#############################################################################
+# Outputs
+#############################################################################
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com"
+    Export:
+      Name: !Sub pundit-${Environment}-api-endpoint
+
+  McpServerUrl:
+    Description: MCP Server URL for Claude
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/mcp"
+    Export:
+      Name: !Sub pundit-${Environment}-mcp-url
+
+  OAuthMetadataUrl:
+    Description: OAuth Authorization Server Metadata URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/.well-known/oauth-authorization-server"
+    Export:
+      Name: !Sub pundit-${Environment}-oauth-metadata
+
+  AuroraClusterArn:
+    Description: Aurora cluster ARN
+    Value: !GetAtt AuroraCluster.DBClusterArn
+    Export:
+      Name: !Sub pundit-${Environment}-aurora-arn
+
+  AuroraSecretArn:
+    Description: Aurora credentials secret ARN
+    Value: !Ref AuroraSecret
+    Export:
+      Name: !Sub pundit-${Environment}-aurora-secret
+
+  PlatformAdminApiUrl:
+    Description: Platform Admin API URL (IAM authenticated)
+    Value: !Sub "https://${PlatformAdminApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Export:
+      Name: !Sub pundit-${Environment}-platform-admin-api
+
+  ChartsBucketName:
+    Description: S3 bucket for chart images
+    Value: !Ref ChartsBucket
+    Export:
+      Name: !Sub pundit-${Environment}-charts-bucket
+
+  ChartsDistributionId:
+    Description: CloudFront distribution ID for charts
+    Value: !Ref ChartsDistribution
+    Export:
+      Name: !Sub pundit-${Environment}-charts-distribution-id
+
+  ChartsUrl:
+    Description: Charts URL (CloudFront)
+    Value: !Sub "https://${ChartsDistribution.DomainName}"
+    Export:
+      Name: !Sub pundit-${Environment}-charts-url
+
+  AdminUIBucketName:
+    Description: S3 bucket for Admin UI static files
+    Value: !Ref AdminUIBucket
+    Export:
+      Name: !Sub pundit-${Environment}-admin-ui-bucket
+
+  AdminUIDistributionId:
+    Description: CloudFront distribution ID for Admin UI
+    Value: !Ref AdminUIDistribution
+    Export:
+      Name: !Sub pundit-${Environment}-admin-ui-distribution-id
+
+  AdminUIUrl:
+    Description: Admin UI URL (CloudFront)
+    Value: !Sub "https://${AdminUIDistribution.DomainName}"
+    Export:
+      Name: !Sub pundit-${Environment}-admin-ui-url
+
+  AuroraClusterEndpoint:
+    Description: Aurora cluster endpoint for database connections
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+    Export:
+      Name: !Sub pundit-${Environment}-aurora-endpoint
+
+  TenantAdminFunctionUrl:
+    Description: Lambda Function URL for Tenant Admin (no timeout limit)
+    Value: !GetAtt TenantAdminFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub pundit-${Environment}-tenant-admin-function-url
+
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub pundit-${Environment}-vpc-id
+
+  PrivateSubnets:
+    Description: Private subnet IDs
+    Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+    Export:
+      Name: !Sub pundit-${Environment}-private-subnets

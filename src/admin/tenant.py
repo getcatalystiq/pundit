@@ -1,0 +1,1381 @@
+"""
+Tenant Admin API Handler.
+
+OAuth authenticated - tenant admins (role=owner/admin) can manage their own tenant.
+Endpoints: /admin/*
+
+Authentication: Bearer token with admin scope
+Authorization: Can only access resources in their own tenant
+"""
+
+import base64
+import json
+import logging
+import os
+import re
+from typing import Any, Optional
+
+import boto3
+
+from oauth.tokens import get_token_claims
+from db.aurora import get_aurora_client, param
+from db.embeddings import generate_embedding
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Secrets Manager client (lazy initialized)
+_secrets_client = None
+
+
+def _get_secrets_client():
+    """Get or create Secrets Manager client."""
+    global _secrets_client
+    if _secrets_client is None:
+        _secrets_client = boto3.client("secretsmanager")
+    return _secrets_client
+
+
+def _store_db_credentials(tenant_id: str, db_name: str, credentials: dict) -> str:
+    """Store database credentials in AWS Secrets Manager.
+
+    Returns the secret ARN.
+    """
+    client = _get_secrets_client()
+    environment = os.environ.get("ENVIRONMENT", "dev")
+    # Sanitize db_name for use in secret name (replace spaces, special chars)
+    safe_db_name = db_name.replace(" ", "-").replace("/", "-").lower()
+    secret_name = f"pundit-{environment}-tenant-db-{tenant_id}-{safe_db_name}"
+
+    try:
+        # Try to create new secret
+        response = client.create_secret(
+            Name=secret_name,
+            SecretString=json.dumps(credentials),
+            Description=f"Pundit database credentials for {db_name}"
+        )
+        return response["ARN"]
+    except client.exceptions.ResourceExistsException:
+        # Secret already exists, update it
+        response = client.put_secret_value(
+            SecretId=secret_name,
+            SecretString=json.dumps(credentials)
+        )
+        # Get the ARN from describe
+        describe = client.describe_secret(SecretId=secret_name)
+        return describe["ARN"]
+
+
+def _get_db_credentials(secret_arn: str) -> dict:
+    """Retrieve database credentials from AWS Secrets Manager."""
+    if not secret_arn:
+        return {}
+    try:
+        client = _get_secrets_client()
+        response = client.get_secret_value(SecretId=secret_arn)
+        return json.loads(response["SecretString"])
+    except Exception as e:
+        logger.error(f"Failed to retrieve credentials: {e}")
+        return {}
+
+
+def _delete_db_credentials(secret_arn: str) -> None:
+    """Delete database credentials from AWS Secrets Manager."""
+    if not secret_arn:
+        return
+    try:
+        client = _get_secrets_client()
+        client.delete_secret(SecretId=secret_arn, ForceDeleteWithoutRecovery=True)
+    except Exception as e:
+        logger.error(f"Failed to delete credentials: {e}")
+
+
+def handler(event: dict, context: Any) -> dict:
+    """
+    Lambda handler for tenant admin endpoints.
+
+    All endpoints require OAuth Bearer token with admin scope.
+    Users can only manage resources in their own tenant.
+    """
+    http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
+    raw_path = event.get("rawPath", "")
+
+    # Strip stage prefix if present (e.g., /prod/admin/databases -> /admin/databases)
+    stage = event.get("requestContext", {}).get("stage", "")
+    if stage and raw_path.startswith(f"/{stage}"):
+        path = raw_path[len(f"/{stage}"):]
+    else:
+        path = raw_path
+
+    path_params = event.get("pathParameters", {}) or {}
+
+    # For Lambda Function URLs, pathParameters is empty - extract from path
+    if not path_params and "/databases/" in path:
+        # Extract database_id from path like /admin/databases/{uuid}/...
+        db_match = re.search(r'/databases/([a-f0-9-]{36})', path)
+        if db_match:
+            path_params["database_id"] = db_match.group(1)
+        # Extract id for delete operations like /admin/databases/{uuid}/ddl/{uuid}
+        id_match = re.search(r'/(?:ddl|docs|examples|text-memory|tool-memory)/([a-f0-9-]{36})', path)
+        if id_match:
+            path_params["id"] = id_match.group(1)
+        # Extract user_id from path like /admin/users/{uuid}
+        user_match = re.search(r'/users/([a-f0-9-]{36})', path)
+        if user_match:
+            path_params["user_id"] = user_match.group(1)
+
+    headers = event.get("headers", {})
+    body = event.get("body", "")
+
+    # Parse body
+    if body and event.get("isBase64Encoded"):
+        body = base64.b64decode(body).decode("utf-8")
+
+    body_params = {}
+    if body:
+        try:
+            body_params = json.loads(body)
+        except json.JSONDecodeError:
+            pass
+
+    # Authenticate
+    auth_header = headers.get("authorization") or headers.get("Authorization")
+    if not auth_header:
+        return _error_response(401, "Missing Authorization header")
+
+    try:
+        claims = get_token_claims(auth_header)
+    except Exception as e:
+        return _error_response(401, f"Invalid token: {e}")
+
+    # Check for admin scope
+    scopes = claims.get("scope", "").split()
+    if "admin" not in scopes and "write" not in scopes:
+        return _error_response(403, "Requires admin or write scope")
+
+    tenant_id = claims["tenant_id"]
+    user_id = claims["sub"]
+
+    try:
+        # Route to handler
+        # Database management
+        if path == "/admin/databases" and http_method == "GET":
+            return _list_databases(tenant_id)
+        elif path == "/admin/databases" and http_method == "POST":
+            return _create_database(tenant_id, body_params)
+        # Training data - DDL (must come before general database GET)
+        elif "/ddl" in path and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _list_ddl(tenant_id, database_id)
+        elif "/ddl" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _add_ddl(tenant_id, database_id, body_params)
+
+        # Training data - Documentation
+        elif "/docs" in path and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _list_docs(tenant_id, database_id)
+        elif "/docs" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _add_doc(tenant_id, database_id, body_params)
+
+        # Training data - Examples
+        elif "/examples" in path and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _list_examples(tenant_id, database_id)
+        elif "/examples" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _add_example(tenant_id, database_id, body_params)
+
+        # Training data - Text Memory
+        elif "/text-memory" in path and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _list_text_memory(tenant_id, database_id)
+        elif "/text-memory" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _add_text_memory(tenant_id, database_id, body_params)
+
+        # Training data - Tool Memory
+        elif "/tool-memory" in path and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _list_tool_memory(tenant_id, database_id)
+        elif "/tool-memory" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _add_tool_memory(tenant_id, database_id, body_params)
+
+        # AI Generation endpoints
+        elif "/ai/pull-ddl" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _ai_pull_ddl(tenant_id, database_id, body_params)
+        elif "/ai/generate-docs" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _ai_generate_docs(tenant_id, database_id, body_params)
+        elif "/ai/generate-examples" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _ai_generate_examples(tenant_id, database_id, body_params)
+        elif "/ai/analyze" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _ai_analyze_schema(tenant_id, database_id)
+
+        # Test connection
+        elif "/test-connection" in path and http_method == "POST":
+            database_id = path_params.get("database_id")
+            return _test_connection(tenant_id, database_id)
+
+        # Single database GET (must come after specific sub-routes)
+        elif path.startswith("/admin/databases/") and http_method == "GET":
+            database_id = path_params.get("database_id")
+            return _get_database(tenant_id, database_id)
+        elif path.startswith("/admin/databases/") and http_method == "PUT":
+            database_id = path_params.get("database_id")
+            return _update_database(tenant_id, database_id, body_params)
+        elif path.startswith("/admin/databases/") and http_method == "DELETE":
+            database_id = path_params.get("database_id")
+            logger.info(f"DELETE database - path: {path}, path_params: {path_params}, database_id: {database_id}")
+            if "/ddl/" in path:
+                ddl_id = path_params.get("id")
+                return _delete_ddl(tenant_id, database_id, ddl_id)
+            elif "/docs/" in path:
+                doc_id = path_params.get("id")
+                return _delete_doc(tenant_id, database_id, doc_id)
+            elif "/examples/" in path:
+                example_id = path_params.get("id")
+                return _delete_example(tenant_id, database_id, example_id)
+            elif "/text-memory/" in path:
+                memory_id = path_params.get("id")
+                return _delete_text_memory(tenant_id, database_id, memory_id)
+            elif "/tool-memory/" in path:
+                memory_id = path_params.get("id")
+                return _delete_tool_memory(tenant_id, database_id, memory_id)
+            else:
+                return _delete_database(tenant_id, database_id)
+
+        # User management
+        elif path == "/admin/users" and http_method == "GET":
+            return _list_users(tenant_id)
+        elif path == "/admin/users" and http_method == "POST":
+            return _create_user(tenant_id, body_params)
+        elif path.startswith("/admin/users/") and http_method == "PUT":
+            target_user_id = path_params.get("user_id")
+            return _update_user(tenant_id, target_user_id, body_params)
+        elif path.startswith("/admin/users/") and http_method == "DELETE":
+            target_user_id = path_params.get("user_id")
+            return _delete_user(tenant_id, user_id, target_user_id)
+
+        return _error_response(404, "Endpoint not found")
+
+    except Exception as e:
+        logger.exception(f"Admin error: {e}")
+        return _error_response(500, str(e))
+
+
+# =============================================================================
+# Database Management
+# =============================================================================
+
+def _list_databases(tenant_id: str) -> dict:
+    """List all databases for the tenant."""
+    aurora = get_aurora_client()
+    databases = aurora.query(
+        """
+        SELECT id, name, db_type, is_default, enabled, created_at, updated_at
+        FROM tenant_databases
+        WHERE tenant_id = :tenant_id::uuid
+        ORDER BY name
+        """,
+        [param("tenant_id", tenant_id, "UUID")]
+    )
+    return _success_response({"databases": databases})
+
+
+def _get_database(tenant_id: str, database_id: str) -> dict:
+    """Get database details with training data counts."""
+    aurora = get_aurora_client()
+
+    db = aurora.query_one(
+        """
+        SELECT id, name, db_type, connection_config, is_default, enabled, created_at
+        FROM tenant_databases
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        """,
+        [
+            param("id", database_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not db:
+        return _error_response(404, "Database not found")
+
+    # Get training data counts
+    ddl_count = aurora.query_one(
+        "SELECT COUNT(*) as count FROM db_ddl WHERE database_id = :id::uuid",
+        [param("id", database_id, "UUID")]
+    )
+    doc_count = aurora.query_one(
+        "SELECT COUNT(*) as count FROM db_documentation WHERE database_id = :id::uuid",
+        [param("id", database_id, "UUID")]
+    )
+    example_count = aurora.query_one(
+        "SELECT COUNT(*) as count FROM db_question_sql WHERE database_id = :id::uuid",
+        [param("id", database_id, "UUID")]
+    )
+
+    db["training_data"] = {
+        "ddl_count": ddl_count["count"] if ddl_count else 0,
+        "documentation_count": doc_count["count"] if doc_count else 0,
+        "examples_count": example_count["count"] if example_count else 0,
+    }
+
+    return _success_response(db)
+
+
+def _create_database(tenant_id: str, data: dict) -> dict:
+    """Create a new database connection."""
+    name = data.get("name")
+    db_type = data.get("db_type")
+    connection_config = data.get("connection_config", {}).copy()
+    is_default = data.get("is_default", False)
+
+    if not name or not db_type:
+        return _error_response(400, "name and db_type are required")
+
+    # Extract credentials and store in Secrets Manager
+    credentials = {}
+    credentials_secret_arn = None
+    if "password" in connection_config:
+        credentials["password"] = connection_config.pop("password")
+    if "username" in connection_config:
+        credentials["username"] = connection_config.get("username")  # Keep username in config too
+
+    if credentials.get("password"):
+        try:
+            credentials_secret_arn = _store_db_credentials(tenant_id, name, credentials)
+            logger.info(f"Stored credentials in Secrets Manager: {credentials_secret_arn}")
+        except Exception as e:
+            logger.error(f"Failed to store credentials: {e}")
+            return _error_response(500, "Failed to securely store credentials")
+
+    aurora = get_aurora_client()
+
+    # If setting as default, unset other defaults
+    if is_default:
+        aurora.execute(
+            "UPDATE tenant_databases SET is_default = FALSE WHERE tenant_id = :tenant_id::uuid",
+            [param("tenant_id", tenant_id, "UUID")]
+        )
+
+    result = aurora.query_one(
+        """
+        INSERT INTO tenant_databases
+            (tenant_id, name, db_type, connection_config, credentials_secret_arn, is_default)
+        VALUES
+            (:tenant_id::uuid, :name, :db_type, :connection_config::jsonb, :credentials_secret_arn, :is_default)
+        RETURNING id, name, db_type, is_default, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("name", name),
+            param("db_type", db_type),
+            param("connection_config", json.dumps(connection_config)),
+            param("credentials_secret_arn", credentials_secret_arn),
+            param("is_default", is_default),
+        ]
+    )
+
+    return _success_response(result, 201)
+
+
+def _update_database(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Update database configuration."""
+    aurora = get_aurora_client()
+
+    # Get current database for secret ARN and name
+    current_db = aurora.query_one(
+        "SELECT name, credentials_secret_arn FROM tenant_databases WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid",
+        [param("id", database_id, "UUID"), param("tenant_id", tenant_id, "UUID")]
+    )
+    if not current_db:
+        return _error_response(404, "Database not found")
+
+    # Build update query dynamically
+    updates = []
+    params = [
+        param("id", database_id, "UUID"),
+        param("tenant_id", tenant_id, "UUID"),
+    ]
+
+    if "name" in data:
+        updates.append("name = :name")
+        params.append(param("name", data["name"]))
+
+    if "connection_config" in data:
+        connection_config = data["connection_config"].copy()
+
+        # Extract credentials and update in Secrets Manager
+        credentials = {}
+        if "password" in connection_config:
+            credentials["password"] = connection_config.pop("password")
+        if "username" in connection_config:
+            credentials["username"] = connection_config.get("username")
+
+        if credentials.get("password"):
+            try:
+                db_name = data.get("name", current_db.get("name"))
+                secret_arn = _store_db_credentials(tenant_id, db_name, credentials)
+                if not current_db.get("credentials_secret_arn"):
+                    updates.append("credentials_secret_arn = :credentials_secret_arn")
+                    params.append(param("credentials_secret_arn", secret_arn))
+            except Exception as e:
+                logger.error(f"Failed to store credentials: {e}")
+                return _error_response(500, "Failed to securely store credentials")
+
+        updates.append("connection_config = :connection_config::jsonb")
+        params.append(param("connection_config", json.dumps(connection_config)))
+
+    if "enabled" in data:
+        updates.append("enabled = :enabled")
+        params.append(param("enabled", data["enabled"]))
+
+    if "is_default" in data and data["is_default"]:
+        # Unset other defaults first
+        aurora.execute(
+            "UPDATE tenant_databases SET is_default = FALSE WHERE tenant_id = :tenant_id::uuid",
+            [param("tenant_id", tenant_id, "UUID")]
+        )
+        updates.append("is_default = TRUE")
+
+    if not updates:
+        return _error_response(400, "No fields to update")
+
+    result = aurora.query_one(
+        f"""
+        UPDATE tenant_databases
+        SET {", ".join(updates)}, updated_at = NOW()
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        RETURNING id, name, db_type, is_default, enabled, updated_at
+        """,
+        params
+    )
+
+    if not result:
+        return _error_response(404, "Database not found")
+
+    return _success_response(result)
+
+
+def _delete_database(tenant_id: str, database_id: str) -> dict:
+    """Delete a database and its training data."""
+    logger.info(f"_delete_database called with tenant_id={tenant_id}, database_id={database_id}")
+    aurora = get_aurora_client()
+
+    # Get secret ARN before deletion
+    db = aurora.query_one(
+        "SELECT credentials_secret_arn FROM tenant_databases WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid",
+        [param("id", database_id, "UUID"), param("tenant_id", tenant_id, "UUID")]
+    )
+
+    result = aurora.query_one(
+        """
+        DELETE FROM tenant_databases
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", database_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "Database not found")
+
+    # Delete credentials from Secrets Manager
+    if db and db.get("credentials_secret_arn"):
+        _delete_db_credentials(db["credentials_secret_arn"])
+
+    return _success_response({"deleted": True})
+
+
+def _test_connection(tenant_id: str, database_id: str) -> dict:
+    """
+    Test the database connection.
+
+    Connects to the tenant's database and runs a simple query to verify connectivity.
+    """
+    import time
+    from db.connections import TenantConnectionManager
+
+    aurora = get_aurora_client()
+
+    # Get database config
+    db = aurora.query_one(
+        """
+        SELECT name, db_type, connection_config, credentials_secret_arn
+        FROM tenant_databases
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        """,
+        [
+            param("id", database_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not db:
+        return _error_response(404, "Database not found")
+
+    try:
+        start_time = time.time()
+
+        # Get connection to tenant database
+        conn_manager = TenantConnectionManager()
+        tenant_conn = conn_manager.create_connection(
+            tenant_id,
+            db["name"]
+        )
+
+        # Run a simple test query based on db type
+        db_type = db["db_type"].lower()
+        if db_type in ("postgres", "postgresql", "redshift"):
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT version()")
+            version_result = cursor.fetchone()
+            server_version = version_result[0] if version_result else "Unknown"
+            cursor.execute("SELECT current_database()")
+            db_result = cursor.fetchone()
+            database_name = db_result[0] if db_result else "Unknown"
+            cursor.close()
+        elif db_type == "mysql":
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT VERSION()")
+            version_result = cursor.fetchone()
+            server_version = version_result[0] if version_result else "Unknown"
+            cursor.execute("SELECT DATABASE()")
+            db_result = cursor.fetchone()
+            database_name = db_result[0] if db_result else "Unknown"
+            cursor.close()
+        else:
+            # Generic test
+            cursor = tenant_conn.connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            server_version = "Connected"
+            database_name = db["name"]
+
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+
+        return _success_response({
+            "success": True,
+            "message": "Connection successful",
+            "details": {
+                "server_version": server_version,
+                "database": database_name,
+                "latency_ms": latency_ms,
+            }
+        })
+
+    except Exception as e:
+        logger.exception(f"Connection test failed: {e}")
+        return _success_response({
+            "success": False,
+            "message": f"Connection failed: {str(e)}",
+        })
+
+
+# =============================================================================
+# Training Data - DDL
+# =============================================================================
+
+def _list_ddl(tenant_id: str, database_id: str) -> dict:
+    """List DDL entries for a database."""
+    print(f"[DDL] _list_ddl called: tenant_id={tenant_id}, database_id={database_id}")
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT id, ddl, created_at
+        FROM db_ddl
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at DESC
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    print(f"[DDL] _list_ddl returning {len(entries)} entries")
+    return _success_response({"ddl": entries})
+
+
+def _add_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Add DDL entry with embedding."""
+    print(f"[DDL] _add_ddl called: tenant_id={tenant_id}, database_id={database_id}")
+    ddl = data.get("ddl")
+    if not ddl:
+        return _error_response(400, "ddl is required")
+
+    # Generate embedding
+    print(f"[DDL] Generating embedding for DDL ({len(ddl)} chars)")
+    embedding = generate_embedding(ddl)
+    print(f"[DDL] Embedding generated: {len(embedding)} dimensions")
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        INSERT INTO db_ddl (tenant_id, database_id, ddl, embedding)
+        VALUES (:tenant_id::uuid, :database_id::uuid, :ddl, :embedding::vector)
+        RETURNING id, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+            param("ddl", ddl),
+            param("embedding", json.dumps(embedding)),
+        ]
+    )
+    print(f"[DDL] DDL inserted with id={result['id']}")
+
+    return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
+
+
+def _delete_ddl(tenant_id: str, database_id: str, ddl_id: str) -> dict:
+    """Delete DDL entry."""
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM db_ddl
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", ddl_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "DDL entry not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# Training Data - Documentation
+# =============================================================================
+
+def _list_docs(tenant_id: str, database_id: str) -> dict:
+    """List documentation entries."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT id, documentation, created_at
+        FROM db_documentation
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at DESC
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return _success_response({"documentation": entries})
+
+
+def _add_doc(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Add documentation entry with embedding."""
+    documentation = data.get("documentation")
+    if not documentation:
+        return _error_response(400, "documentation is required")
+
+    embedding = generate_embedding(documentation)
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
+        VALUES (:tenant_id::uuid, :database_id::uuid, :documentation, :embedding::vector)
+        RETURNING id, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+            param("documentation", documentation),
+            param("embedding", json.dumps(embedding)),
+        ]
+    )
+
+    return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
+
+
+def _delete_doc(tenant_id: str, database_id: str, doc_id: str) -> dict:
+    """Delete documentation entry."""
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM db_documentation
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", doc_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "Documentation entry not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# Training Data - Examples
+# =============================================================================
+
+def _list_examples(tenant_id: str, database_id: str) -> dict:
+    """List example queries."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT id, question, sql, created_at
+        FROM db_question_sql
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at DESC
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return _success_response({"examples": entries})
+
+
+def _add_example(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Add example query with embedding."""
+    question = data.get("question")
+    sql = data.get("sql")
+
+    if not question or not sql:
+        return _error_response(400, "question and sql are required")
+
+    embedding = generate_embedding(question)
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        INSERT INTO db_question_sql (tenant_id, database_id, question, sql, embedding)
+        VALUES (:tenant_id::uuid, :database_id::uuid, :question, :sql, :embedding::vector)
+        RETURNING id, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+            param("question", question),
+            param("sql", sql),
+            param("embedding", json.dumps(embedding)),
+        ]
+    )
+
+    return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
+
+
+def _delete_example(tenant_id: str, database_id: str, example_id: str) -> dict:
+    """Delete example query."""
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM db_question_sql
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", example_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "Example not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# Training Data - Text Memory
+# =============================================================================
+
+def _list_text_memory(tenant_id: str, database_id: str) -> dict:
+    """List text memory entries."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT id, content, created_at
+        FROM db_text_memory
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at DESC
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return _success_response({"entries": entries})
+
+
+def _add_text_memory(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Add text memory entry with embedding."""
+    content = data.get("content")
+    if not content:
+        return _error_response(400, "content is required")
+
+    embedding = generate_embedding(content)
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        INSERT INTO db_text_memory (tenant_id, database_id, content, embedding)
+        VALUES (:tenant_id::uuid, :database_id::uuid, :content, :embedding::vector)
+        RETURNING id, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+            param("content", content),
+            param("embedding", json.dumps(embedding)),
+        ]
+    )
+
+    return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
+
+
+def _delete_text_memory(tenant_id: str, database_id: str, memory_id: str) -> dict:
+    """Delete text memory entry."""
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM db_text_memory
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", memory_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "Text memory entry not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# Training Data - Tool Memory
+# =============================================================================
+
+def _list_tool_memory(tenant_id: str, database_id: str) -> dict:
+    """List tool memory entries."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT id, question, tool_name, tool_args, success, metadata, created_at
+        FROM db_tool_memory
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at DESC
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return _success_response({"entries": entries})
+
+
+def _add_tool_memory(tenant_id: str, database_id: str, data: dict) -> dict:
+    """Add tool memory entry with embedding (simplified: question + sql)."""
+    question = data.get("question")
+    sql = data.get("sql")
+
+    if not question or not sql:
+        return _error_response(400, "question and sql are required")
+
+    # Simplified form: auto-set tool_name and tool_args
+    tool_name = "execute_sql"
+    tool_args = {"sql": sql}
+
+    embedding = generate_embedding(question)
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        INSERT INTO db_tool_memory (tenant_id, database_id, question, tool_name, tool_args, success, embedding)
+        VALUES (:tenant_id::uuid, :database_id::uuid, :question, :tool_name, :tool_args::jsonb, TRUE, :embedding::vector)
+        RETURNING id, created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+            param("question", question),
+            param("tool_name", tool_name),
+            param("tool_args", json.dumps(tool_args)),
+            param("embedding", json.dumps(embedding)),
+        ]
+    )
+
+    return _success_response({"id": result["id"], "created_at": result["created_at"]}, 201)
+
+
+def _delete_tool_memory(tenant_id: str, database_id: str, memory_id: str) -> dict:
+    """Delete tool memory entry."""
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM db_tool_memory
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", memory_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "Tool memory entry not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# AI Generation
+# =============================================================================
+
+def _get_database_ddl(tenant_id: str, database_id: str) -> str:
+    """Get all DDL entries for a database as a single string."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT ddl FROM db_ddl
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return "\n\n".join(entry["ddl"] for entry in entries)
+
+
+def _get_database_docs(tenant_id: str, database_id: str) -> list[str]:
+    """Get all documentation entries for a database."""
+    aurora = get_aurora_client()
+    entries = aurora.query(
+        """
+        SELECT documentation FROM db_documentation
+        WHERE tenant_id = :tenant_id::uuid AND database_id = :database_id::uuid
+        ORDER BY created_at
+        """,
+        [
+            param("tenant_id", tenant_id, "UUID"),
+            param("database_id", database_id, "UUID"),
+        ]
+    )
+    return [entry["documentation"] for entry in entries]
+
+
+def _ai_pull_ddl(tenant_id: str, database_id: str, data: dict) -> dict:
+    """
+    Pull DDL from the connected database.
+
+    Connects to the tenant's database and introspects the schema.
+    """
+    from db.connections import TenantConnectionManager
+    from ai.schema import SchemaIntrospector
+
+    aurora = get_aurora_client()
+
+    # Get database config
+    db = aurora.query_one(
+        """
+        SELECT name, db_type, connection_config, credentials_secret_arn
+        FROM tenant_databases
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        """,
+        [
+            param("id", database_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not db:
+        return _error_response(404, "Database not found")
+
+    schema = data.get("schema", "public")
+    tables = data.get("tables")  # Optional: specific tables to pull
+
+    try:
+        # Get connection to tenant database
+        conn_manager = TenantConnectionManager()
+        tenant_conn = conn_manager.create_connection(
+            tenant_id,
+            db["name"]
+        )
+
+        # Introspect schema (use the underlying raw connection)
+        introspector = SchemaIntrospector(tenant_conn.connection, db["db_type"])
+        logger.info(f"[PULL DDL] Starting introspection for schema={schema}, db_type={db['db_type']}")
+        ddl_by_table = introspector.get_ddl_by_table(schema, tables)
+        logger.info(f"[PULL DDL] Got {len(ddl_by_table)} tables: {list(ddl_by_table.keys())}")
+
+        # Get table list
+        table_list = list(ddl_by_table.keys())
+
+        # Optionally auto-save the DDL (each table as separate row)
+        if data.get("auto_save", False):
+            for table_name, table_ddl in ddl_by_table.items():
+                embedding = generate_embedding(table_ddl)
+                aurora.execute(
+                    """
+                    INSERT INTO db_ddl (tenant_id, database_id, ddl, embedding)
+                    VALUES (:tenant_id::uuid, :database_id::uuid, :ddl, :embedding::vector)
+                    """,
+                    [
+                        param("tenant_id", tenant_id, "UUID"),
+                        param("database_id", database_id, "UUID"),
+                        param("ddl", table_ddl),
+                        param("embedding", json.dumps(embedding)),
+                    ]
+                )
+
+        return _success_response({
+            "ddl_by_table": ddl_by_table,
+            "tables": table_list,
+            "schema": schema,
+            "saved": data.get("auto_save", False),
+        })
+
+    except Exception as e:
+        logger.exception(f"Failed to pull DDL: {e}")
+        return _error_response(500, f"Failed to connect to database: {str(e)}")
+
+
+def _ai_generate_docs(tenant_id: str, database_id: str, data: dict) -> dict:
+    """
+    Generate documentation using AI based on the schema.
+
+    Uses existing DDL to generate comprehensive documentation.
+    Returns one documentation entry per table.
+    """
+    from ai.generator import AIGenerator
+
+    # Get existing DDL
+    ddl = _get_database_ddl(tenant_id, database_id)
+    if not ddl:
+        return _error_response(400, "No DDL found. Please add schema definitions first.")
+
+    existing_docs = _get_database_docs(tenant_id, database_id)
+    table_name = data.get("table_name")  # Optional: focus on specific table
+
+    try:
+        generator = AIGenerator()
+        # Returns dict: {table_name: documentation_text, ...}
+        docs_by_table = generator.generate_documentation(
+            ddl=ddl,
+            table_name=table_name,
+            existing_docs="\n---\n".join(existing_docs) if existing_docs else None,
+        )
+
+        # Optionally auto-save each table's documentation as a separate row
+        if data.get("auto_save", False):
+            aurora = get_aurora_client()
+            saved_entries = []
+
+            for tbl_name, doc_text in docs_by_table.items():
+                # Prefix with table header for clarity
+                full_doc = f"## Table: {tbl_name}\n\n{doc_text}"
+                embedding = generate_embedding(full_doc)
+
+                result = aurora.query_one(
+                    """
+                    INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
+                    VALUES (:tenant_id::uuid, :database_id::uuid, :documentation, :embedding::vector)
+                    RETURNING id
+                    """,
+                    [
+                        param("tenant_id", tenant_id, "UUID"),
+                        param("database_id", database_id, "UUID"),
+                        param("documentation", full_doc),
+                        param("embedding", json.dumps(embedding)),
+                    ]
+                )
+                saved_entries.append({
+                    "id": result["id"],
+                    "table": tbl_name,
+                })
+
+            return _success_response({
+                "documentation": docs_by_table,
+                "saved": True,
+                "saved_entries": saved_entries,
+            })
+
+        return _success_response({
+            "documentation": docs_by_table,
+            "saved": False,
+        })
+
+    except Exception as e:
+        logger.exception(f"Failed to generate documentation: {e}")
+        return _error_response(500, f"AI generation failed: {str(e)}")
+
+
+def _ai_generate_examples(tenant_id: str, database_id: str, data: dict) -> dict:
+    """
+    Generate sample SQL queries using AI.
+
+    Creates practical example queries based on the schema.
+    """
+    from ai.generator import AIGenerator
+
+    # Get existing DDL
+    ddl = _get_database_ddl(tenant_id, database_id)
+    if not ddl:
+        return _error_response(400, "No DDL found. Please add schema definitions first.")
+
+    num_queries = data.get("count", 5)
+    context = data.get("context")  # Optional business context
+
+    try:
+        generator = AIGenerator()
+        examples = generator.generate_sample_queries(
+            ddl=ddl,
+            num_queries=num_queries,
+            context=context,
+        )
+
+        # Optionally auto-save all examples
+        if data.get("auto_save", False) and examples:
+            aurora = get_aurora_client()
+            saved_ids = []
+
+            for example in examples:
+                embedding = generate_embedding(example["question"])
+                result = aurora.query_one(
+                    """
+                    INSERT INTO db_question_sql (tenant_id, database_id, question, sql, embedding)
+                    VALUES (:tenant_id::uuid, :database_id::uuid, :question, :sql, :embedding::vector)
+                    RETURNING id
+                    """,
+                    [
+                        param("tenant_id", tenant_id, "UUID"),
+                        param("database_id", database_id, "UUID"),
+                        param("question", example["question"]),
+                        param("sql", example["sql"]),
+                        param("embedding", json.dumps(embedding)),
+                    ]
+                )
+                saved_ids.append(result["id"])
+
+            return _success_response({
+                "examples": examples,
+                "saved": True,
+                "saved_ids": saved_ids,
+            })
+
+        return _success_response({
+            "examples": examples,
+            "saved": False,
+        })
+
+    except Exception as e:
+        logger.exception(f"Failed to generate examples: {e}")
+        return _error_response(500, f"AI generation failed: {str(e)}")
+
+
+def _ai_analyze_schema(tenant_id: str, database_id: str) -> dict:
+    """
+    Analyze the schema and provide insights.
+
+    Returns analysis including relationships, suggestions, and patterns.
+    """
+    from ai.generator import AIGenerator
+
+    # Get existing DDL
+    ddl = _get_database_ddl(tenant_id, database_id)
+    if not ddl:
+        return _error_response(400, "No DDL found. Please add schema definitions first.")
+
+    existing_docs = _get_database_docs(tenant_id, database_id)
+
+    try:
+        generator = AIGenerator()
+
+        # Get schema analysis
+        analysis = generator.analyze_schema(ddl)
+
+        # Get documentation suggestions
+        suggestions = generator.suggest_documentation(ddl, existing_docs)
+
+        return _success_response({
+            "analysis": analysis,
+            "documentation_suggestions": suggestions,
+        })
+
+    except Exception as e:
+        logger.exception(f"Failed to analyze schema: {e}")
+        return _error_response(500, f"AI analysis failed: {str(e)}")
+
+
+# =============================================================================
+# User Management
+# =============================================================================
+
+def _list_users(tenant_id: str) -> dict:
+    """List users in the tenant."""
+    aurora = get_aurora_client()
+    users = aurora.query(
+        """
+        SELECT id, email, name, role, scopes, is_active, created_at, last_login_at
+        FROM users
+        WHERE tenant_id = :tenant_id::uuid
+        ORDER BY created_at
+        """,
+        [param("tenant_id", tenant_id, "UUID")]
+    )
+    return _success_response({"users": users})
+
+
+def _create_user(tenant_id: str, data: dict) -> dict:
+    """Create a new user in the tenant."""
+    import bcrypt
+
+    email = data.get("email")
+    password = data.get("password")
+    name = data.get("name")
+    role = data.get("role", "member")
+    scopes = data.get("scopes", ["read", "write"])
+
+    if not email or not password:
+        return _error_response(400, "email and password are required")
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+    aurora = get_aurora_client()
+
+    try:
+        result = aurora.query_one(
+            """
+            INSERT INTO users (tenant_id, email, password_hash, name, role, scopes)
+            VALUES (:tenant_id::uuid, :email, :password_hash, :name, :role, :scopes)
+            RETURNING id, email, name, role, scopes, created_at
+            """,
+            [
+                param("tenant_id", tenant_id, "UUID"),
+                param("email", email),
+                param("password_hash", password_hash),
+                param("name", name),
+                param("role", role),
+                param("scopes", scopes),
+            ]
+        )
+        return _success_response(result, 201)
+    except Exception as e:
+        if "duplicate" in str(e).lower():
+            return _error_response(409, "User with this email already exists")
+        raise
+
+
+def _update_user(tenant_id: str, user_id: str, data: dict) -> dict:
+    """Update user details."""
+    aurora = get_aurora_client()
+
+    updates = []
+    params = [
+        param("id", user_id, "UUID"),
+        param("tenant_id", tenant_id, "UUID"),
+    ]
+
+    if "name" in data:
+        updates.append("name = :name")
+        params.append(param("name", data["name"]))
+
+    if "role" in data:
+        updates.append("role = :role")
+        params.append(param("role", data["role"]))
+
+    if "scopes" in data:
+        updates.append("scopes = :scopes")
+        params.append(param("scopes", data["scopes"]))
+
+    if "is_active" in data:
+        updates.append("is_active = :is_active")
+        params.append(param("is_active", data["is_active"]))
+
+    if not updates:
+        return _error_response(400, "No fields to update")
+
+    result = aurora.query_one(
+        f"""
+        UPDATE users
+        SET {", ".join(updates)}, updated_at = NOW()
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        RETURNING id, email, name, role, scopes, is_active
+        """,
+        params
+    )
+
+    if not result:
+        return _error_response(404, "User not found")
+
+    return _success_response(result)
+
+
+def _delete_user(tenant_id: str, current_user_id: str, target_user_id: str) -> dict:
+    """Delete a user (cannot delete yourself)."""
+    if current_user_id == target_user_id:
+        return _error_response(400, "Cannot delete yourself")
+
+    aurora = get_aurora_client()
+    result = aurora.query_one(
+        """
+        DELETE FROM users
+        WHERE id = :id::uuid AND tenant_id = :tenant_id::uuid
+        RETURNING id
+        """,
+        [
+            param("id", target_user_id, "UUID"),
+            param("tenant_id", tenant_id, "UUID"),
+        ]
+    )
+
+    if not result:
+        return _error_response(404, "User not found")
+
+    return _success_response({"deleted": True})
+
+
+# =============================================================================
+# Response Helpers
+# =============================================================================
+
+def _success_response(data: Any, status_code: int = 200) -> dict:
+    """Create success response."""
+    return {
+        "statusCode": status_code,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(data, default=str),
+    }
+
+
+def _error_response(status_code: int, message: str) -> dict:
+    """Create error response."""
+    return {
+        "statusCode": status_code,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"error": message}),
+    }

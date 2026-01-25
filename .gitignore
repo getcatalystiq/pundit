@@ -1,0 +1,6 @@
+.aws-sam
+layers
+.playwright-mcp
+
+admin-ui/.env.production
+.DS_Store
