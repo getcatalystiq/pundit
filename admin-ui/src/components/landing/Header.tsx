@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../auth/AuthContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, Github } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navLinks = [
@@ -84,6 +84,18 @@ export function Header() {
 
           {/* Desktop Actions */}
           <div className="hidden lg:flex items-center gap-4">
+            <a
+              href="https://github.com/getcatalystiq/pundit"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "transition-colors",
+                isScrolled ? "text-muted-foreground hover:text-foreground" : "text-gray-300 hover:text-white"
+              )}
+              aria-label="GitHub"
+            >
+              <Github className="h-5 w-5" />
+            </a>
             <ThemeToggle />
             {isLoggedIn ? (
               <Button asChild>
@@ -98,6 +110,15 @@ export function Header() {
 
           {/* Mobile Menu Button */}
           <div className="flex lg:hidden items-center gap-2">
+            <a
+              href="https://github.com/getcatalystiq/pundit"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="GitHub"
+            >
+              <Github className="h-5 w-5" />
+            </a>
             <ThemeToggle />
             <Button
               variant="ghost"

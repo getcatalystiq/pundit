@@ -1,6 +1,5 @@
 # Pundit - Standalone MCP Server for Database Tools
 
-[![GitHub](https://img.shields.io/badge/GitHub-getcatalystiq%2Fpundit-181717?logo=github)](https://github.com/getcatalystiq/pundit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/getcatalystiq/pundit/actions/workflows/ci.yml/badge.svg)](https://github.com/getcatalystiq/pundit/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
