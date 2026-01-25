@@ -15,6 +15,7 @@ Pundit is a hosted MCP (Model Context Protocol) server that provides AI-powered 
 - **Multi-tenant** - Isolated data per organization
 - **RAG-powered SQL** - Uses pgvector for semantic search over schemas/docs/examples
 - **Chart Rendering** - Plotly charts rendered to PNG images inline
+- **Admin UI** - React 19 dashboard for managing databases and training data
 
 ## Architecture
 
@@ -22,6 +23,9 @@ Pundit is a hosted MCP (Model Context Protocol) server that provides AI-powered 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           AWS Infrastructure                             │
 ├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   CloudFront + S3 (Admin UI)                                            │
+│        └── React 19 SPA for tenant management                           │
 │                                                                          │
 │   API Gateway (HTTP)                                                     │
 │        │                                                                 │
@@ -33,7 +37,8 @@ Pundit is a hosted MCP (Model Context Protocol) server that provides AI-powered 
 │   Lambda Functions                                                       │
 │        │                                                                 │
 │        ├── OAuth Lambda (authentication, tokens)                        │
-│        └── MCP Lambda (database tools, chart rendering)                 │
+│        ├── MCP Lambda (database tools, chart rendering)                 │
+│        └── Tenant Admin Lambda (database & training data management)    │
 │                │                                                         │
 │                ▼                                                         │
 │   Aurora Serverless v2 (PostgreSQL + pgvector)                          │
@@ -58,6 +63,7 @@ Pundit is a hosted MCP (Model Context Protocol) server that provides AI-powered 
 - SAM CLI (`pip install aws-sam-cli`)
 - Docker (for building Lambda layers)
 - PostgreSQL client (for running migrations)
+- Node.js 20+ (for Admin UI)
 
 ## Quick Start
 
@@ -312,6 +318,39 @@ Response:
 | `OAUTH_ISSUER` | OAuth issuer URL (API Gateway URL) |
 | `LOG_LEVEL` | Logging level (default: INFO) |
 
+## Admin UI
+
+The Admin UI is a React 19 + Vite + TypeScript single-page application for managing databases and training data.
+
+### Development
+
+```bash
+cd admin-ui
+npm install
+npm run dev    # Start dev server on http://localhost:5173
+```
+
+### Deploy
+
+```bash
+cd admin-ui
+npm run deploy           # Deploy to dev (default)
+./scripts/deploy.sh prod # Deploy to production
+```
+
+The deploy script automatically:
+- Builds the application with production API URLs
+- Uploads to S3
+- Invalidates CloudFront cache
+
+### Tech Stack
+
+- React 19 with TypeScript
+- Vite 6 for build tooling
+- Tailwind CSS for styling
+- Radix UI primitives
+- React Router for navigation
+
 ## Development
 
 ### Local Testing
@@ -376,6 +415,3 @@ aws ec2 describe-security-groups --group-ids sg-xxx
 ## License
 
 MIT
-
-
-Migrations are run through the migrations lambda function
