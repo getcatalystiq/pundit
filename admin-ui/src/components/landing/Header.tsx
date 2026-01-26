@@ -8,7 +8,6 @@ import { cn } from '@/lib/utils';
 
 const navLinks = [
   { href: '#features', label: 'Features' },
-  { href: '#pricing', label: 'Pricing' },
   { href: 'https://docs.pundit.dev', label: 'Docs', external: true },
 ];
 

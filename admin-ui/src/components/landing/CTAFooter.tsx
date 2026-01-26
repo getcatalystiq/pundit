@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ArrowRight, Sparkles } from 'lucide-react';
 
@@ -50,19 +49,9 @@ export function CTAFooter() {
             className="text-base px-8 py-6 bg-white text-primary hover:bg-white/90 shadow-xl"
             asChild
           >
-            <Link to="/login">
-              Start Free Trial
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
-          </Button>
-          <Button
-            size="lg"
-            variant="outline"
-            className="text-base px-8 py-6 border-white/60 bg-white/20 text-white hover:bg-white/30 hover:text-white hover:border-white/80"
-            asChild
-          >
             <a href="https://docs.pundit.dev" target="_blank" rel="noopener noreferrer">
               View Documentation
+              <ArrowRight className="ml-2 h-4 w-4" />
             </a>
           </Button>
         </div>
