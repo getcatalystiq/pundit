@@ -104,7 +104,7 @@ export function Hero() {
             {/* CTAs */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start animate-fade-in-up animation-delay-200">
               <Button size="lg" variant="outline" className="text-base px-8 py-6 border-white/40 bg-white/10 text-white hover:bg-white/20 hover:text-white hover:border-white/60" asChild>
-                <a href="https://docs.pundit.dev" target="_blank" rel="noopener noreferrer">
+                <a href="https://github.com/getcatalystiq/pundit" target="_blank" rel="noopener noreferrer">
                   View Documentation
                 </a>
               </Button>

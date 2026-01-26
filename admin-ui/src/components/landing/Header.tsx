@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 
 const navLinks = [
   { href: '#features', label: 'Features' },
-  { href: 'https://docs.pundit.dev', label: 'Docs', external: true },
+  { href: 'https://github.com/getcatalystiq/pundit', label: 'Docs', external: true },
 ];
 
 export function Header() {

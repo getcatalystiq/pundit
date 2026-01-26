@@ -43,7 +43,7 @@ export function CTAFooter() {
             className="text-base px-8 py-6 bg-white text-primary hover:bg-white/90 shadow-xl"
             asChild
           >
-            <a href="https://docs.pundit.dev" target="_blank" rel="noopener noreferrer">
+            <a href="https://github.com/getcatalystiq/pundit" target="_blank" rel="noopener noreferrer">
               View Documentation
               <ArrowRight className="ml-2 h-4 w-4" />
             </a>
