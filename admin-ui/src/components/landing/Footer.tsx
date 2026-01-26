@@ -3,13 +3,8 @@ import { Link } from 'react-router-dom';
 const footerLinks = {
   product: [
     { label: 'Features', href: '#features' },
-    { label: 'Changelog', href: '#' },
-    { label: 'Roadmap', href: '#' },
   ],
   resources: [
-    { label: 'Documentation', href: 'https://docs.pundit.dev', external: true },
-    { label: 'API Reference', href: 'https://docs.pundit.dev/api', external: true },
-    { label: 'Status', href: '#' },
     { label: 'GitHub', href: 'https://github.com/getcatalystiq/pundit', external: true },
   ],
 };
