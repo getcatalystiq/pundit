@@ -29,11 +29,6 @@ const faqs: FAQItem[] = [
       'We currently support PostgreSQL (including Supabase), MySQL, SQLite, Snowflake, and BigQuery. MongoDB and Redshift support are coming soon. Each database type has optimized connectors and query generation tailored to its SQL dialect.',
   },
   {
-    question: 'Can I self-host Pundit?',
-    answer:
-      'Currently, Pundit is available as a hosted service only. We handle all infrastructure, security updates, and scaling. For Enterprise customers with specific compliance requirements, we offer dedicated deployments within your AWS account. Contact sales for details.',
-  },
-  {
     question: 'How do I integrate Pundit with Claude Desktop?',
     answer:
       'Integration is simple: add the Pundit MCP server URL to your Claude Desktop configuration, authenticate via OAuth, and start querying. Our documentation provides step-by-step guides for Claude Desktop, Claude.ai, and custom MCP client implementations.',
