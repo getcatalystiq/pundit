@@ -154,19 +154,6 @@ export function Integrations() {
             />
           ))}
         </div>
-
-        {/* Request integration CTA */}
-        <div className="mt-12 text-center">
-          <p className="text-muted-foreground">
-            Don't see your database?{' '}
-            <a
-              href="mailto:support@pundit.dev"
-              className="text-primary hover:underline font-medium"
-            >
-              Let us know
-            </a>
-          </p>
-        </div>
       </div>
     </section>
   );

@@ -115,19 +115,6 @@ export function FAQ() {
             />
           ))}
         </div>
-
-        {/* Still have questions */}
-        <div className="mt-12 text-center">
-          <p className="text-muted-foreground">
-            Still have questions?{' '}
-            <a
-              href="mailto:support@pundit.dev"
-              className="text-primary hover:underline font-medium"
-            >
-              Get in touch
-            </a>
-          </p>
-        </div>
       </div>
     </section>
   );
