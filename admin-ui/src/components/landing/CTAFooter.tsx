@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 
 export function CTAFooter() {
   return (
@@ -25,12 +25,6 @@ export function CTAFooter() {
       <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-white/10 rounded-full blur-[100px]" />
 
       <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 relative text-center">
-        {/* Badge */}
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 border border-white/20 text-sm text-white/90 mb-8 animate-fade-in">
-          <Sparkles className="h-4 w-4" />
-          <span>No credit card required</span>
-        </div>
-
         {/* Headline */}
         <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-6 animate-fade-in-up">
           Ready to query your data with AI?
