@@ -76,13 +76,6 @@ def _get_cors_headers(origin: Optional[str] = None) -> dict:
     }
 
 
-# SECURITY: Allowed domains for auto-registration from environment
-_ALLOWED_AUTO_REGISTER_DOMAINS = os.environ.get(
-    "ALLOWED_AUTO_REGISTER_DOMAINS",
-    "claude.ai,localhost,127.0.0.1"
-).split(",")
-
-
 def _is_allowed_auto_register_uri(redirect_uri: str) -> bool:
     """
     Check if a redirect URI is allowed for automatic client registration.
@@ -90,12 +83,19 @@ def _is_allowed_auto_register_uri(redirect_uri: str) -> bool:
     SECURITY: Only exact domain matches are allowed, no subdomain wildcards.
     """
     from urllib.parse import urlparse
+
+    # Read env var each time to pick up changes without cold start
+    allowed_domains = os.environ.get(
+        "ALLOWED_AUTO_REGISTER_DOMAINS",
+        "claude.ai,localhost,127.0.0.1"
+    ).split(",")
+
     parsed = urlparse(redirect_uri)
     hostname = parsed.hostname or ""
 
     # SECURITY: Exact match only, no subdomain wildcards to prevent
     # attacker.claude.ai type attacks
-    return hostname in _ALLOWED_AUTO_REGISTER_DOMAINS
+    return hostname in allowed_domains
 
 
 def handler(event: dict, context: Any) -> dict:
