@@ -18,6 +18,7 @@ Globals:
         AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
         AURORA_DATABASE: pundit
         OPENAI_SECRET_ARN: !Ref OpenAISecret
+        ALLOWED_AUTO_REGISTER_DOMAINS: claude.ai,localhost,127.0.0.1,maven-widget-test.pages.dev
 
 Parameters:
   Environment:
