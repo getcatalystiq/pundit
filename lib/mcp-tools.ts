@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import { sql } from "@/lib/db";
+import { searchTrainingData, saveToolMemory, saveTextMemory, toPromptSections } from "@/lib/rag";
+import { resolveDatabaseId, connectTenantDb } from "@/lib/tenant-db";
+import { generateSql } from "@/lib/sql-generator";
+import { renderChart } from "@/lib/chart";
+import { setLastQueryResult, getLastQueryResult } from "@/lib/request-context";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Extra = RequestHandlerExtra<any, any>;
@@ -48,6 +54,29 @@ function scopeError(scope: string) {
   };
 }
 
+function errorResult(message: string) {
+  return {
+    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    isError: true,
+  };
+}
+
+// SQL safety: only allow SELECT, WITH...SELECT, EXPLAIN SELECT
+const BLOCKED_KEYWORDS = /^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|CALL|EXECUTE|EXEC)\b/i;
+
+function isSelectOnly(sqlText: string): boolean {
+  const trimmed = sqlText.trim();
+  if (BLOCKED_KEYWORDS.test(trimmed)) return false;
+  // Allow SELECT, WITH...SELECT, EXPLAIN SELECT
+  return /^\s*(SELECT|WITH\s|EXPLAIN\s)/i.test(trimmed);
+}
+
+function injectLimit(sqlText: string, maxRows: number): string {
+  // Don't add LIMIT if one already exists
+  if (/\bLIMIT\s+\d+/i.test(sqlText)) return sqlText;
+  return `${sqlText.replace(/;\s*$/, "")} LIMIT ${maxRows}`;
+}
+
 export function registerTools(server: McpServer) {
   // --- search_database_context ---
   server.registerTool(
@@ -66,19 +95,37 @@ export function registerTools(server: McpServer) {
           .describe("Database name (uses default if omitted)"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "read")) return scopeError("read");
-      getAuth(extra);
+      const { tenantId } = getAuth(extra);
 
-      // TODO: Implement in Phase 5/6
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "search_database_context: Not yet implemented",
-          },
-        ],
-      };
+      try {
+        const { databaseId, databaseName } = await resolveDatabaseId(
+          tenantId,
+          input.database
+        );
+        const context = await searchTrainingData(
+          input.question,
+          tenantId,
+          databaseId
+        );
+        const sections = toPromptSections(context);
+
+        const summary = [
+          `Database: **${databaseName}**`,
+          `Found: ${context.ddl.length} DDL, ${context.documentation.length} docs, ${context.examples.length} examples, ${context.toolMemory.length} tool memories, ${context.textMemory.length} text memories`,
+          "",
+          sections || "No relevant training data found.",
+        ].join("\n");
+
+        return {
+          content: [{ type: "text" as const, text: summary }],
+        };
+      } catch (e) {
+        return errorResult(
+          e instanceof Error ? e.message : "Search failed"
+        );
+      }
     }
   );
 
@@ -97,18 +144,35 @@ export function registerTools(server: McpServer) {
           .describe("Database name (uses default if omitted)"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "read")) return scopeError("read");
-      getAuth(extra);
+      const { tenantId } = getAuth(extra);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "generate_sql: Not yet implemented",
-          },
-        ],
-      };
+      try {
+        const { databaseId } = await resolveDatabaseId(
+          tenantId,
+          input.database
+        );
+        const context = await searchTrainingData(
+          input.question,
+          tenantId,
+          databaseId
+        );
+        const result = await generateSql(input.question, context);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**Explanation:** ${result.explanation}\n\n\`\`\`sql\n${result.sql}\n\`\`\``,
+            },
+          ],
+        };
+      } catch (e) {
+        return errorResult(
+          e instanceof Error ? e.message : "SQL generation failed"
+        );
+      }
     }
   );
 
@@ -135,18 +199,91 @@ export function registerTools(server: McpServer) {
           .describe("Maximum rows to return"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "write")) return scopeError("write");
-      getAuth(extra);
+      const { userId, tenantId } = getAuth(extra);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "execute_sql: Not yet implemented",
-          },
-        ],
-      };
+      // Validate SQL safety
+      if (!isSelectOnly(input.sql)) {
+        return errorResult(
+          "Only SELECT queries are allowed. Use SELECT, WITH...SELECT, or EXPLAIN SELECT."
+        );
+      }
+
+      const finalSql = injectLimit(input.sql, input.max_rows);
+      const start = Date.now();
+
+      let conn;
+      try {
+        const { databaseId, databaseName } = await resolveDatabaseId(
+          tenantId,
+          input.database
+        );
+        conn = await connectTenantDb(tenantId, input.database);
+        const { columns, rows } = await conn.query(finalSql);
+        const executionTime = Date.now() - start;
+
+        // Store in AsyncLocalStorage for visualize_data
+        setLastQueryResult(columns, rows);
+
+        // Log to audit table
+        await sql`
+          INSERT INTO query_audit_log (tenant_id, database_id, user_id, sql_text, row_count, execution_time_ms, success)
+          VALUES (${tenantId}::uuid, ${databaseId}::uuid, ${userId}::uuid, ${input.sql}, ${rows.length}, ${executionTime}, TRUE)
+        `;
+
+        // Format results as markdown table
+        if (rows.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Query returned 0 rows from **${databaseName}** (${executionTime}ms)`,
+              },
+            ],
+          };
+        }
+
+        const header = `| ${columns.join(" | ")} |`;
+        const separator = `| ${columns.map(() => "---").join(" | ")} |`;
+        const dataRows = rows.map(
+          (row) =>
+            `| ${columns.map((c) => String(row[c] ?? "NULL")).join(" | ")} |`
+        );
+
+        const table = [header, separator, ...dataRows].join("\n");
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**${databaseName}** — ${rows.length} rows (${executionTime}ms)\n\n${table}`,
+            },
+          ],
+        };
+      } catch (e) {
+        const executionTime = Date.now() - start;
+        const errorMsg =
+          e instanceof Error ? e.message : "Query execution failed";
+
+        // Log failed query
+        try {
+          const { databaseId } = await resolveDatabaseId(
+            tenantId,
+            input.database
+          );
+          await sql`
+            INSERT INTO query_audit_log (tenant_id, database_id, user_id, sql_text, execution_time_ms, success, error_message)
+            VALUES (${tenantId}::uuid, ${databaseId}::uuid, ${userId}::uuid, ${input.sql}, ${executionTime}, FALSE, ${errorMsg})
+          `;
+        } catch {
+          // Don't fail the response if audit logging fails
+        }
+
+        return errorResult(errorMsg);
+      } finally {
+        await conn?.close();
+      }
     }
   );
 
@@ -170,18 +307,59 @@ export function registerTools(server: McpServer) {
           .describe("Column to use for color grouping"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "read")) return scopeError("read");
       getAuth(extra);
 
-      return {
-        content: [
+      const lastResult = getLastQueryResult();
+      if (!lastResult || lastResult.rows.length === 0) {
+        return errorResult(
+          "No query results available. Run execute_sql first."
+        );
+      }
+
+      // Validate columns exist
+      if (!lastResult.columns.includes(input.x_column)) {
+        return errorResult(
+          `Column '${input.x_column}' not found. Available: ${lastResult.columns.join(", ")}`
+        );
+      }
+      if (!lastResult.columns.includes(input.y_column)) {
+        return errorResult(
+          `Column '${input.y_column}' not found. Available: ${lastResult.columns.join(", ")}`
+        );
+      }
+
+      try {
+        const png = await renderChart(
+          input.chart_type,
+          input.x_column,
+          input.y_column,
+          lastResult.rows,
           {
-            type: "text" as const,
-            text: "visualize_data: Not yet implemented",
-          },
-        ],
-      };
+            title: input.title,
+            colorColumn: input.color_column,
+          }
+        );
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Chart rendered: ${input.chart_type} (${input.x_column} vs ${input.y_column})`,
+            },
+            {
+              type: "image" as const,
+              data: png.toString("base64"),
+              mimeType: "image/png",
+            },
+          ],
+        };
+      } catch (e) {
+        return errorResult(
+          e instanceof Error ? e.message : "Chart rendering failed"
+        );
+      }
     }
   );
 
@@ -203,18 +381,50 @@ export function registerTools(server: McpServer) {
           .describe("Database name (uses default if omitted)"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "write")) return scopeError("write");
-      getAuth(extra);
+      const { tenantId } = getAuth(extra);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "save_sql_pattern: Not yet implemented",
-          },
-        ],
-      };
+      try {
+        const { databaseId, databaseName } = await resolveDatabaseId(
+          tenantId,
+          input.database
+        );
+
+        const savedId = await saveToolMemory(
+          input.question,
+          "generate_sql",
+          { question: input.question, sql: input.sql },
+          true,
+          null,
+          tenantId,
+          databaseId
+        );
+
+        if (savedId) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Pattern saved to **${databaseName}** for future reference.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `A similar pattern already exists in **${databaseName}**. Skipped to avoid duplicates.`,
+            },
+          ],
+        };
+      } catch (e) {
+        return errorResult(
+          e instanceof Error ? e.message : "Save failed"
+        );
+      }
     }
   );
 
@@ -235,18 +445,46 @@ export function registerTools(server: McpServer) {
           .describe("Database name (uses default if omitted)"),
       },
     },
-    async (_input, extra) => {
+    async (input, extra) => {
       if (!checkScope(extra, "write")) return scopeError("write");
-      getAuth(extra);
+      const { tenantId } = getAuth(extra);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "save_business_context: Not yet implemented",
-          },
-        ],
-      };
+      try {
+        const { databaseId, databaseName } = await resolveDatabaseId(
+          tenantId,
+          input.database
+        );
+
+        const savedId = await saveTextMemory(
+          input.content,
+          tenantId,
+          databaseId
+        );
+
+        if (savedId) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Business context saved to **${databaseName}**.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Similar business context already exists in **${databaseName}**. Skipped to avoid duplicates.`,
+            },
+          ],
+        };
+      } catch (e) {
+        return errorResult(
+          e instanceof Error ? e.message : "Save failed"
+        );
+      }
     }
   );
 
@@ -262,9 +500,7 @@ export function registerTools(server: McpServer) {
       if (!checkScope(extra, "read")) return scopeError("read");
       const { tenantId } = getAuth(extra);
 
-      // This one we can implement now since it's just a DB query
-      const { sql: dbSql } = await import("@/lib/db");
-      const rows = await dbSql`
+      const rows = await sql`
         SELECT name, database_name, host, port, is_default, enabled
         FROM tenant_databases
         WHERE tenant_id = ${tenantId}::uuid
