@@ -1,5 +1,4 @@
-import { generateObject } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { generateObject, gateway } from "ai";
 import { z } from "zod";
 import { type TrainingDataContext, toPromptSections } from "@/lib/rag";
 
@@ -22,10 +21,10 @@ export async function generateSql(
   const contextSections = toPromptSections(context);
 
   const { object } = await generateObject({
-    model: anthropic("claude-sonnet-4-20250514"),
+    model: gateway("anthropic/claude-sonnet-4-20250514"),
     schema: SqlGenerationSchema,
     temperature: 0,
-    maxTokens: 4096,
+    maxOutputTokens: 4096,
     system: `You are a SQL expert. Generate a PostgreSQL SELECT query to answer the user's question.
 
 RULES:

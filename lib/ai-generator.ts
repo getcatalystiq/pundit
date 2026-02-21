@@ -1,8 +1,7 @@
-import { generateObject } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { generateObject, gateway } from "ai";
 import { z } from "zod";
 
-const model = anthropic("claude-sonnet-4-20250514");
+const model = gateway("anthropic/claude-sonnet-4-20250514");
 
 // --- Schemas ---
 
@@ -56,7 +55,7 @@ export async function generateDocumentation(
     model,
     schema: DocumentationSchema,
     temperature: 0,
-    maxTokens: 8192,
+    maxOutputTokens: 8192,
     system: `You are a database documentation expert. Given DDL (CREATE TABLE statements), generate comprehensive documentation for each table.
 
 For each table, include these sections in markdown:
@@ -91,7 +90,7 @@ export async function generateSampleQueries(
     model,
     schema: SampleQueriesSchema,
     temperature: 0,
-    maxTokens: 4096,
+    maxOutputTokens: 4096,
     system: `You are a SQL expert. Given DDL, generate ${numQueries} sample natural language questions and their corresponding SQL queries.
 
 Rules:
@@ -115,7 +114,7 @@ export async function analyzeSchema(
     model,
     schema: SchemaAnalysisSchema,
     temperature: 0,
-    maxTokens: 4096,
+    maxOutputTokens: 4096,
     system: `You are a database architect. Analyze the provided DDL and return:
 - List of tables
 - Total column count

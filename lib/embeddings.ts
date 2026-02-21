@@ -1,7 +1,6 @@
-import { embed, embedMany } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { embed, embedMany, gateway } from "ai";
 
-const MODEL = openai.embedding("text-embedding-3-small");
+const MODEL = gateway.textEmbeddingModel("openai/text-embedding-3-small");
 
 /**
  * Generate a single embedding vector (1536 dimensions).
