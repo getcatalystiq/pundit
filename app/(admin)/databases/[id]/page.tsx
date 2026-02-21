@@ -217,7 +217,11 @@ export default function DatabaseDetailPage() {
           </CardContent>
         </Card>
       ) : (
-        <TrainingDataTab databaseId={id} tab={activeTab} refreshKey={refreshKey} />
+        <TrainingDataTab databaseId={id} tab={activeTab} refreshKey={refreshKey} onDataChange={async () => {
+          const r = await fetchWithAuth(`/api/admin/databases/${id}`);
+          const d = await r.json();
+          setTraining(d.training_data);
+        }} />
       )}
     </div>
   );
@@ -227,10 +231,12 @@ function TrainingDataTab({
   databaseId,
   tab,
   refreshKey,
+  onDataChange,
 }: {
   databaseId: string;
   tab: Tab;
   refreshKey: number;
+  onDataChange?: () => void;
 }) {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
@@ -278,6 +284,7 @@ function TrainingDataTab({
         { method: "DELETE" }
       );
       await fetchItems();
+      onDataChange?.();
     } catch {
       alert("Failed to delete item");
     }
