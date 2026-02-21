@@ -21,17 +21,24 @@ const envSchema = z.object({
     .transform((s) => s.split(",").map((d) => d.trim())),
 });
 
-function validateEnv() {
-  const result = envSchema.safeParse(process.env);
-  if (!result.success) {
-    const errors = result.error.issues
-      .map((i) => `  ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`Environment validation failed:\n${errors}`);
-  }
-  return result.data;
-}
-
-export const env = validateEnv();
-
 export type Env = z.infer<typeof envSchema>;
+
+let _env: Env | null = null;
+
+/**
+ * Lazily validated environment — crashes on first access if invalid.
+ * Lazy to avoid crashing during Next.js build (no env vars at build time).
+ */
+export function getEnv(): Env {
+  if (!_env) {
+    const result = envSchema.safeParse(process.env);
+    if (!result.success) {
+      const errors = result.error.issues
+        .map((i) => `  ${i.path.join(".")}: ${i.message}`)
+        .join("\n");
+      throw new Error(`Environment validation failed:\n${errors}`);
+    }
+    _env = result.data;
+  }
+  return _env;
+}
