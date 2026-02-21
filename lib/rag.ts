@@ -23,7 +23,7 @@ const BASE_LIMITS = {
   textMemory: 2,
 };
 const TOTAL_BUDGET = 20;
-const MIN_SIMILARITY = 0.3;
+const MIN_SIMILARITY = 0.1;
 const DDL_BOOST = 0.3;
 const DOC_BOOST = 0.25;
 const TOOL_MEMORY_SIMILARITY_WEIGHT = 0.8;
