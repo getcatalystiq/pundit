@@ -1,7 +1,7 @@
 import { generateObject, gateway } from "ai";
 import { z } from "zod";
 
-const model = gateway("anthropic/claude-sonnet-4");
+const model = gateway("anthropic/claude-sonnet-4-6");
 
 // --- Schemas ---
 

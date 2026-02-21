@@ -21,7 +21,7 @@ export async function generateSql(
   const contextSections = toPromptSections(context);
 
   const { object } = await generateObject({
-    model: gateway("anthropic/claude-sonnet-4"),
+    model: gateway("anthropic/claude-sonnet-4-6"),
     schema: SqlGenerationSchema,
     temperature: 0,
     maxOutputTokens: 4096,
