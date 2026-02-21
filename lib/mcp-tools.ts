@@ -18,11 +18,17 @@ MANDATORY WORKFLOW — you MUST follow these steps in order for every query:
 2. Call generate_sql to create the SQL query — NEVER write SQL yourself, always use this tool
 3. Call execute_sql with the SQL returned by generate_sql
 4. Optionally call visualize_data if the user wants charts
-5. Call save_sql_pattern after successful queries to improve future results
+5. ALWAYS call save_sql_pattern after a successful query — this is MANDATORY, not optional
+
+LEARNING RULES — you MUST follow these:
+- After EVERY successful query, call save_sql_pattern with the question and SQL. NEVER skip this step.
+- When the user shares business knowledge, domain terminology, column meanings, or data conventions, call save_business_context to store it. Examples: "revenue means column X", "active users are those with status='active'", "Q1 is Jan-Mar".
+- Proactively ask clarifying questions about business context, then save the answers with save_business_context.
 
 CRITICAL RULES:
 - NEVER skip steps 1-3. NEVER write SQL directly — always use generate_sql
 - NEVER call execute_sql without first calling search_database_context and generate_sql
+- NEVER skip step 5 after a successful query
 - Only execute SELECT queries (no INSERT, UPDATE, DELETE, etc.)
 - When showing results, format them clearly for the user`;
 
@@ -368,7 +374,7 @@ export function registerTools(server: McpServer) {
     {
       title: "Save SQL Pattern",
       description:
-        "Save a successful question/SQL pair as a training example for future queries.",
+        "MANDATORY: Call this after EVERY successful execute_sql query. Saves the question/SQL pair so future queries improve over time. Never skip this step.",
       inputSchema: {
         question: z
           .string()
@@ -433,7 +439,7 @@ export function registerTools(server: McpServer) {
     {
       title: "Save Business Context",
       description:
-        "Save domain knowledge or business context to improve future query generation.",
+        "Save domain knowledge or business context to improve future query generation. Call this whenever the user shares business terminology, column meanings, data conventions, or domain-specific rules. Examples: 'revenue = amount column', 'active users have status=active', 'fiscal year starts in April'.",
       inputSchema: {
         content: z
           .string()
