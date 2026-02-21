@@ -34,7 +34,15 @@ export async function POST(
   }
 
   const combinedDdl = ddlRows.map((r) => r.ddl).join("\n\n");
-  const queries = await generateSampleQueries(combinedDdl, num_queries ?? 5);
+
+  let queries: Array<{ question: string; sql: string }>;
+  try {
+    queries = await generateSampleQueries(combinedDdl, num_queries ?? 5);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("AI generation failed:", message);
+    return jsonResponse({ error: `AI generation failed: ${message}` }, 502);
+  }
 
   if (!auto_save) {
     return jsonResponse({ examples: queries });
@@ -42,7 +50,15 @@ export async function POST(
 
   // Save with embeddings (embed the questions)
   const questions = queries.map((q) => q.question);
-  const embeddings = await generateEmbeddings(questions);
+
+  let embeddings: number[][];
+  try {
+    embeddings = await generateEmbeddings(questions);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Embedding generation failed:", message);
+    return jsonResponse({ error: `Embedding generation failed: ${message}` }, 502);
+  }
 
   for (let i = 0; i < queries.length; i++) {
     const embeddingStr = `[${embeddings[i].join(",")}]`;

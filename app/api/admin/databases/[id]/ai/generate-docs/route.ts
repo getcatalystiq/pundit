@@ -31,7 +31,15 @@ export async function POST(
   }
 
   const combinedDdl = ddlRows.map((r) => r.ddl).join("\n\n");
-  const documentation = await generateDocumentation(combinedDdl);
+
+  let documentation: Record<string, string>;
+  try {
+    documentation = await generateDocumentation(combinedDdl);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("AI generation failed:", message);
+    return jsonResponse({ error: `AI generation failed: ${message}` }, 502);
+  }
 
   if (!auto_save) {
     return jsonResponse({ documentation });
@@ -39,7 +47,16 @@ export async function POST(
 
   // Save each table's documentation with embeddings
   const docTexts = Object.values(documentation);
-  const embeddings = await generateEmbeddings(docTexts);
+
+  let embeddings: number[][];
+  try {
+    embeddings = await generateEmbeddings(docTexts);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Embedding generation failed:", message);
+    return jsonResponse({ error: `Embedding generation failed: ${message}` }, 502);
+  }
+
   const entries = Object.entries(documentation);
 
   for (let i = 0; i < entries.length; i++) {
