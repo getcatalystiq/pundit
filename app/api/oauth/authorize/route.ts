@@ -75,6 +75,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: Request) {
+  try {
   const formData = await request.formData();
   const email = formData.get("email") as string;
   const password = formData.get("password") as string;
@@ -145,7 +146,14 @@ export async function POST(request: Request) {
   url.searchParams.set("code", code);
   if (state) url.searchParams.set("state", state);
 
-  return Response.redirect(url.toString(), 302);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: url.toString() },
+  });
+  } catch (err) {
+    console.error("OAuth authorize POST failed:", err);
+    return oauthError("server_error", err instanceof Error ? err.message : "Internal error", 500);
+  }
 }
 
 function renderLoginForm(opts: {
