@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest } from "next/server";
 import {
   getClient,
@@ -52,6 +53,8 @@ export async function GET(request: NextRequest) {
     return oauthError("invalid_request", "redirect_uri not registered");
   }
 
+  const csrfToken = crypto.randomBytes(32).toString("base64url");
+
   const html = renderLoginForm({
     clientId,
     redirectUri,
@@ -60,10 +63,14 @@ export async function GET(request: NextRequest) {
     codeChallenge,
     codeChallengeMethod: codeChallengeMethod ?? "S256",
     clientName: client.client_name as string,
+    csrfToken,
   });
 
   return new Response(html, {
-    headers: { "Content-Type": "text/html" },
+    headers: {
+      "Content-Type": "text/html",
+      "Set-Cookie": `csrf_token=${csrfToken}; HttpOnly; SameSite=Strict; Secure; Path=/api/oauth/authorize; Max-Age=600`,
+    },
   });
 }
 
@@ -80,12 +87,31 @@ export async function POST(request: Request) {
     "code_challenge_method"
   ) as string;
 
+  // CSRF validation: compare form token against cookie
+  const formCsrf = formData.get("csrf_token") as string;
+  const cookieHeader = request.headers.get("cookie") ?? "";
+  const cookieCsrf = cookieHeader
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith("csrf_token="))
+    ?.split("=")[1];
+
+  if (!formCsrf || !cookieCsrf) {
+    return oauthError("invalid_request", "Missing CSRF token");
+  }
+  const a = Buffer.from(formCsrf);
+  const b = Buffer.from(cookieCsrf);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return oauthError("invalid_request", "Invalid CSRF token");
+  }
+
   if (!email || !password) {
     return oauthError("invalid_request", "Email and password are required");
   }
 
   const user = await authenticateUser(email, password);
   if (!user) {
+    const newCsrfToken = crypto.randomBytes(32).toString("base64url");
     const html = renderLoginForm({
       clientId,
       redirectUri,
@@ -94,11 +120,15 @@ export async function POST(request: Request) {
       codeChallenge,
       codeChallengeMethod,
       clientName: clientId,
+      csrfToken: newCsrfToken,
       error: "Invalid email or password",
     });
     return new Response(html, {
       status: 401,
-      headers: { "Content-Type": "text/html" },
+      headers: {
+        "Content-Type": "text/html",
+        "Set-Cookie": `csrf_token=${newCsrfToken}; HttpOnly; SameSite=Strict; Secure; Path=/api/oauth/authorize; Max-Age=600`,
+      },
     });
   }
 
@@ -126,6 +156,7 @@ function renderLoginForm(opts: {
   codeChallenge: string;
   codeChallengeMethod: string;
   clientName: string;
+  csrfToken?: string;
   error?: string;
 }): string {
   return `<!DOCTYPE html>
@@ -155,6 +186,7 @@ function renderLoginForm(opts: {
     <p class="subtitle">Authorize <strong>${escapeHtml(opts.clientName)}</strong></p>
     ${opts.error ? `<div class="error">${escapeHtml(opts.error)}</div>` : ""}
     <form method="POST">
+      <input type="hidden" name="csrf_token" value="${escapeHtml(opts.csrfToken ?? "")}">
       <input type="hidden" name="client_id" value="${escapeHtml(opts.clientId)}">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(opts.redirectUri)}">
       <input type="hidden" name="scope" value="${escapeHtml(opts.scope)}">

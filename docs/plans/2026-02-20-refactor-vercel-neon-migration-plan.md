@@ -1111,7 +1111,7 @@ Apply before deployment:
 - [x] `ENCRYPTION_KEY` validated at startup (64 hex chars)
 - [x] HKDF derivation for encryption (not raw key)
 - [x] AAD in AES-GCM (tenant_id + database_id)
-- [ ] CSRF on OAuth authorize form
+- [x] CSRF on OAuth authorize form
 - [ ] Rate limiting on `/api/oauth/token` and `/api/login`
 - [x] `SET TRANSACTION READ ONLY` on tenant DB connections
 - [x] Scope separation (admin vs MCP)
