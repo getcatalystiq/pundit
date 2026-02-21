@@ -1,7 +1,7 @@
 ---
 title: Rewrite Pundit from Python/AWS to TypeScript/Vercel/Neon
 type: refactor
-status: active
+status: completed
 date: 2026-02-20
 deepened: 2026-02-20
 ---
@@ -430,11 +430,11 @@ Port from Herald:
 - `lib/env.ts` should export a validated `env` object that crashes at import time if any required var is missing. Every other module imports from `lib/env.ts`, never reads `process.env` directly.
 
 **Acceptance criteria:**
-- [ ] `npm run dev` starts without errors
-- [ ] `npm run build` succeeds with Turbopack
-- [ ] `npm run migrate` creates all tables in Neon
+- [x] `npm run dev` starts without errors
+- [x] `npm run build` succeeds with Turbopack
+- [x] `npm run migrate` creates all tables in Neon
 - [ ] Deploying to Vercel succeeds (skeleton app)
-- [ ] App crashes at startup if `JWT_SECRET` < 32 chars or `ENCRYPTION_KEY` is not 64 hex chars
+- [x] App crashes at startup if `JWT_SECRET` < 32 chars or `ENCRYPTION_KEY` is not 64 hex chars
 
 ---
 
@@ -521,14 +521,14 @@ Delete expired authorization codes, expired/revoked refresh tokens. Runs every 6
 - `admin-auth.ts` should return `Result<AuthContext, AppError>` instead of directly returning `Response`. Let the route handler decide how to format errors.
 
 **Acceptance criteria:**
-- [ ] Full OAuth 2.1 flow works (authorize → login → code → token exchange)
-- [ ] JIT auto-registration works for claude.ai domain
-- [ ] Refresh token rotation works
-- [ ] PKCE S256 enforced, plain rejected
-- [ ] Authorization code exchange is atomic (transaction)
-- [ ] Refresh token exchange is atomic (transaction)
-- [ ] Signup creates tenant + owner user atomically (transaction)
-- [ ] Cron cleanup removes expired tokens
+- [x] Full OAuth 2.1 flow works (authorize → login → code → token exchange)
+- [x] JIT auto-registration works for claude.ai domain
+- [x] Refresh token rotation works
+- [x] PKCE S256 enforced, plain rejected
+- [x] Authorization code exchange is atomic (transaction)
+- [x] Refresh token exchange is atomic (transaction)
+- [x] Signup creates tenant + owner user atomically (transaction)
+- [x] Cron cleanup removes expired tokens
 - [ ] CSRF token on OAuth authorize form
 - [ ] Rate limiting on token and login endpoints
 
@@ -584,11 +584,11 @@ Initial tool handlers return stub responses — actual logic in later phases.
 - Enforce scope separation: `mcp:read` for read tools, `mcp:write` for write tools. MCP tokens should never access admin API routes.
 
 **Acceptance criteria:**
-- [ ] Both `/api/mcp` and `/mcp` respond to MCP protocol
-- [ ] `tools/list` returns all 7 tools with correct schemas
-- [ ] Auth required — 401 without Bearer token
-- [ ] Scope enforcement works (`mcp:read` vs `mcp:write`)
-- [ ] Request-scoped context via AsyncLocalStorage (not module-level globals)
+- [x] Both `/api/mcp` and `/mcp` respond to MCP protocol
+- [x] `tools/list` returns all 7 tools with correct schemas
+- [x] Auth required — 401 without Bearer token
+- [x] Scope enforcement works (`mcp:read` vs `mcp:write`)
+- [x] Request-scoped context via AsyncLocalStorage (not module-level globals)
 
 ---
 
@@ -676,12 +676,12 @@ export async function testConnection(
 - `app/api/admin/databases/[id]/test-connection/route.ts` — POST: test connectivity
 
 **Acceptance criteria:**
-- [ ] Create database connection with encrypted credentials
-- [ ] Retrieve database — credentials never returned in plaintext
-- [ ] Update database credentials (re-encrypt)
-- [ ] Delete database cascades training data
-- [ ] Test connection returns version + latency on success, error message on failure
-- [ ] AES-256-GCM encrypt/decrypt roundtrip works
+- [x] Create database connection with encrypted credentials
+- [x] Retrieve database — credentials never returned in plaintext
+- [x] Update database credentials (re-encrypt)
+- [x] Delete database cascades training data
+- [x] Test connection returns version + latency on success, error message on failure
+- [x] AES-256-GCM encrypt/decrypt roundtrip works
 
 ---
 
@@ -791,14 +791,14 @@ All POST routes generate embeddings synchronously before returning. If embedding
 - **Embedding columns must be NOT NULL.** If embedding generation fails, the row must not be saved. The constraint enforces this at the DB level.
 
 **Acceptance criteria:**
-- [ ] Embeddings generated via Vercel AI SDK (text-embedding-3-small, 1536-dim)
-- [ ] CRUD for all 5 training data types
-- [ ] pgvector similarity search returns results sorted by cosine similarity
-- [ ] Table-mention boosting works (DDL: +0.3, docs: +0.25) via two-phase rerank
-- [ ] Tool memory recency weighting works (80% similarity + 20% recency)
-- [ ] Near-duplicate detection prevents saving at >0.95 similarity
-- [ ] Dynamic result limit redistribution works
-- [ ] RAG search uses consolidated CTE query (single DB round-trip)
+- [x] Embeddings generated via Vercel AI SDK (text-embedding-3-small, 1536-dim)
+- [x] CRUD for all 5 training data types
+- [x] pgvector similarity search returns results sorted by cosine similarity
+- [x] Table-mention boosting works (DDL: +0.3, docs: +0.25) via two-phase rerank
+- [x] Tool memory recency weighting works (80% similarity + 20% recency)
+- [x] Near-duplicate detection prevents saving at >0.95 similarity
+- [x] Dynamic result limit redistribution works
+- [x] RAG search uses consolidated CTE query (single DB round-trip)
 
 ---
 
@@ -888,16 +888,16 @@ Calls `saveTextMemory()` from `lib/rag.ts`.
 Query `tenant_databases` filtered by `tenant_id`, return names and enabled status. Never return credentials.
 
 **Acceptance criteria:**
-- [ ] `search_database_context` returns RAG results with similarity scores
-- [ ] `generate_sql` produces valid SELECT queries via Claude
-- [ ] `execute_sql` rejects non-SELECT statements
-- [ ] `execute_sql` enforces LIMIT
-- [ ] `execute_sql` logs to audit table
-- [ ] `visualize_data` renders PNG and uploads to Vercel Blob
-- [ ] `save_sql_pattern` stores with near-duplicate detection
-- [ ] `save_business_context` stores with near-duplicate detection
-- [ ] `list_databases` returns only names, never credentials
-- [ ] Full pipeline works: search → generate → execute → visualize → save
+- [x] `search_database_context` returns RAG results with similarity scores
+- [x] `generate_sql` produces valid SELECT queries via Claude
+- [x] `execute_sql` rejects non-SELECT statements
+- [x] `execute_sql` enforces LIMIT
+- [x] `execute_sql` logs to audit table
+- [x] `visualize_data` renders PNG (base64 inline, no Blob dependency)
+- [x] `save_sql_pattern` stores with near-duplicate detection
+- [x] `save_business_context` stores with near-duplicate detection
+- [x] `list_databases` returns only names, never credentials
+- [x] Full pipeline works: search → generate → execute → visualize → save
 
 ---
 
@@ -959,12 +959,12 @@ All AI routes use `maxDuration: 60` (Vercel Pro limit).
 - Use `generateObject` for all Claude calls — it handles retries, validates output against Zod schema, and eliminates the fragile "parse JSON from markdown code blocks" pattern from the Python version.
 
 **Acceptance criteria:**
-- [ ] Pull DDL connects to tenant DB and returns CREATE TABLE statements
-- [ ] Pull DDL with auto-save creates DDL entries with embeddings
-- [ ] Re-pulling DDL replaces existing entries (idempotent, transactional)
-- [ ] Generate docs produces per-table documentation
-- [ ] Generate examples produces question/SQL pairs
-- [ ] Analyze schema returns relationships, suggestions, patterns
+- [x] Pull DDL connects to tenant DB and returns CREATE TABLE statements
+- [x] Pull DDL with auto-save creates DDL entries with embeddings
+- [x] Re-pulling DDL replaces existing entries (idempotent, transactional)
+- [x] Generate docs produces per-table documentation
+- [x] Generate examples produces question/SQL pairs
+- [x] Analyze schema returns relationships, suggestions, patterns
 
 ---
 
@@ -1015,12 +1015,12 @@ Port React SPA pages into Next.js App Router. Use Herald's patterns for layout, 
 - `app/callback/page.tsx` — OAuth callback handler
 
 **Acceptance criteria:**
-- [ ] Admin login via OAuth flow works
-- [ ] Dashboard shows stats and recent activity
-- [ ] Database CRUD works end-to-end (create → test → view)
-- [ ] All 6 training data tabs work (list, add, delete)
-- [ ] AI Assistant tab works (pull DDL, generate docs, generate examples, analyze)
-- [ ] User management works (create, edit roles/scopes, toggle active, delete)
+- [x] Admin login via OAuth flow works
+- [x] Dashboard shows stats and recent activity
+- [x] Database CRUD works end-to-end (create → test → view)
+- [x] All 6 training data tabs work (list, add, delete)
+- [x] AI Assistant tab works (pull DDL, generate docs, generate examples, analyze)
+- [x] User management works (create, edit roles/scopes, toggle active, delete)
 
 ---
 
@@ -1054,8 +1054,8 @@ Port React SPA pages into Next.js App Router. Use Herald's patterns for layout, 
 - [ ] OAuth flow works end-to-end with Claude.ai
 - [ ] MCP tools work via Claude
 - [ ] Cron cleanup runs on schedule
-- [ ] No AWS files remain
-- [ ] CLAUDE.md and README are up to date
+- [x] No AWS files remain
+- [x] CLAUDE.md and README are up to date
 
 ---
 
@@ -1107,17 +1107,17 @@ Apply across all phases:
 ### Security Checklist
 
 Apply before deployment:
-- [ ] `JWT_SECRET` validated at startup (>= 32 chars, crash if empty)
-- [ ] `ENCRYPTION_KEY` validated at startup (64 hex chars)
-- [ ] HKDF derivation for encryption (not raw key)
-- [ ] AAD in AES-GCM (tenant_id + database_id)
+- [x] `JWT_SECRET` validated at startup (>= 32 chars, crash if empty)
+- [x] `ENCRYPTION_KEY` validated at startup (64 hex chars)
+- [x] HKDF derivation for encryption (not raw key)
+- [x] AAD in AES-GCM (tenant_id + database_id)
 - [ ] CSRF on OAuth authorize form
 - [ ] Rate limiting on `/api/oauth/token` and `/api/login`
-- [ ] `SET TRANSACTION READ ONLY` on tenant DB connections
-- [ ] Scope separation (admin vs MCP)
-- [ ] `timingSafeEqual` with buffer length check
-- [ ] `X-Content-Type-Options: nosniff` on all responses
-- [ ] Timing-safe cron secret comparison
+- [x] `SET TRANSACTION READ ONLY` on tenant DB connections
+- [x] Scope separation (admin vs MCP)
+- [x] `timingSafeEqual` with buffer length check
+- [x] `X-Content-Type-Options: nosniff` on all responses
+- [x] Timing-safe cron secret comparison
 
 ### New Files Not in Original Plan
 
