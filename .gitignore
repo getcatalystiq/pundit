@@ -25,3 +25,4 @@ npm-debug.log*
 # Legacy
 .aws-sam/
 .playwright-mcp/
+.env*.local
