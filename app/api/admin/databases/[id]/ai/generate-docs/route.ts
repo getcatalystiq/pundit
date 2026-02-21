@@ -1,7 +1,7 @@
 import { requireAdmin, isErrorResponse } from "@/lib/admin-auth";
 import { sql } from "@/lib/db";
 import { generateDocumentation } from "@/lib/ai-generator";
-import { generateEmbeddings } from "@/lib/embeddings";
+import { generateEmbedding } from "@/lib/embeddings";
 import { jsonResponse } from "@/lib/utils";
 
 export const maxDuration = 60;
@@ -17,7 +17,7 @@ export async function POST(
 
   const { auto_save } = body as { auto_save?: boolean };
 
-  // Get DDL for this database
+  // Get DDL entries for this database
   const ddlRows = await sql`
     SELECT ddl FROM db_ddl
     WHERE tenant_id = ${auth.tenantId}::uuid AND database_id = ${id}::uuid
@@ -30,47 +30,47 @@ export async function POST(
     );
   }
 
-  const combinedDdl = ddlRows.map((r) => r.ddl).join("\n\n");
+  // Process each DDL entry individually to avoid timeouts
+  const allDocs: Record<string, string> = {};
+  let savedCount = 0;
 
-  let documentation: Record<string, string>;
-  try {
-    documentation = await generateDocumentation(combinedDdl);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("AI generation failed:", message);
-    return jsonResponse({ error: `AI generation failed: ${message}` }, 502);
+  for (const row of ddlRows) {
+    const ddl = row.ddl as string;
+
+    let docs: Record<string, string>;
+    try {
+      docs = await generateDocumentation(ddl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("AI generation failed for DDL entry:", message);
+      continue;
+    }
+
+    Object.assign(allDocs, docs);
+
+    if (auto_save) {
+      for (const [, docText] of Object.entries(docs)) {
+        try {
+          const embedding = await generateEmbedding(docText);
+          const embeddingStr = `[${embedding.join(",")}]`;
+          await sql`
+            INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
+            VALUES (${auth.tenantId}::uuid, ${id}::uuid, ${docText}, ${embeddingStr}::vector)
+          `;
+          savedCount++;
+        } catch (err) {
+          console.error("Failed to save doc entry:", err instanceof Error ? err.message : err);
+        }
+      }
+    }
   }
 
-  if (!auto_save) {
-    return jsonResponse({ documentation });
-  }
-
-  // Save each table's documentation with embeddings
-  const docTexts = Object.values(documentation);
-
-  let embeddings: number[][];
-  try {
-    embeddings = await generateEmbeddings(docTexts);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("Embedding generation failed:", message);
-    return jsonResponse({ error: `Embedding generation failed: ${message}` }, 502);
-  }
-
-  const entries = Object.entries(documentation);
-
-  for (let i = 0; i < entries.length; i++) {
-    const [, docText] = entries[i];
-    const embeddingStr = `[${embeddings[i].join(",")}]`;
-    await sql`
-      INSERT INTO db_documentation (tenant_id, database_id, documentation, embedding)
-      VALUES (${auth.tenantId}::uuid, ${id}::uuid, ${docText}, ${embeddingStr}::vector)
-    `;
+  if (Object.keys(allDocs).length === 0) {
+    return jsonResponse({ error: "AI generation failed for all DDL entries" }, 502);
   }
 
   return jsonResponse({
-    documentation,
-    saved: true,
-    count: entries.length,
+    documentation: allDocs,
+    ...(auto_save ? { saved: true, count: savedCount } : {}),
   });
 }
