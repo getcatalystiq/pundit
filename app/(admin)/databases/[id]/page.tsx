@@ -40,6 +40,7 @@ export default function DatabaseDetailPage() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [aiResult, setAiResult] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -104,6 +105,7 @@ export default function DatabaseDetailPage() {
       const dbResponse = await fetchWithAuth(`/api/admin/databases/${id}`);
       const dbData = await dbResponse.json();
       setTraining(dbData.training_data);
+      setRefreshKey((k) => k + 1);
     } catch (err: unknown) {
       setAiResult(`Error: ${(err as { error?: string })?.error || "Failed"}`);
     } finally {
@@ -215,7 +217,7 @@ export default function DatabaseDetailPage() {
           </CardContent>
         </Card>
       ) : (
-        <TrainingDataTab databaseId={id} tab={activeTab} />
+        <TrainingDataTab databaseId={id} tab={activeTab} refreshKey={refreshKey} />
       )}
     </div>
   );
@@ -224,9 +226,11 @@ export default function DatabaseDetailPage() {
 function TrainingDataTab({
   databaseId,
   tab,
+  refreshKey,
 }: {
   databaseId: string;
   tab: Tab;
+  refreshKey: number;
 }) {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
@@ -258,7 +262,7 @@ function TrainingDataTab({
 
   useEffect(() => {
     fetchItems();
-  }, [databaseId, tab]);
+  }, [databaseId, tab, refreshKey]);
 
   const handleDelete = async (itemId: string) => {
     const paramMap: Record<string, string> = {
