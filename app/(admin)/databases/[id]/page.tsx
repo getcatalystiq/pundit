@@ -304,9 +304,18 @@ function TrainingDataTab({
       {items.map((item) => (
         <Card key={item.id as string}>
           <CardContent className="p-4 flex items-start justify-between gap-4">
-            <pre className="flex-1 text-sm overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto">
-              {(item.ddl || item.documentation || item.question || item.content || item.sql_text || JSON.stringify(item, null, 2)) as string}
-            </pre>
+            <div className="flex-1 text-sm overflow-x-auto max-h-48 overflow-y-auto">
+              {item.question && item.sql ? (
+                <>
+                  <p className="font-medium mb-2">{item.question as string}</p>
+                  <pre className="whitespace-pre-wrap p-2 bg-muted rounded text-xs">{item.sql as string}</pre>
+                </>
+              ) : (
+                <pre className="whitespace-pre-wrap">
+                  {(item.ddl || item.documentation || item.content || item.sql_text || JSON.stringify(item, null, 2)) as string}
+                </pre>
+              )}
+            </div>
             <Button
               variant="destructive"
               size="sm"
