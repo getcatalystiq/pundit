@@ -1,21 +1,11 @@
-import { ChartJSNodeCanvas } from "chartjs-node-canvas";
+import { createCanvas } from "@napi-rs/canvas";
+import { Chart, registerables } from "chart.js";
 import type { ChartConfiguration } from "chart.js";
+
+Chart.register(...registerables);
 
 const WIDTH = 800;
 const HEIGHT = 600;
-
-let _renderer: ChartJSNodeCanvas | null = null;
-
-function getRenderer(): ChartJSNodeCanvas {
-  if (!_renderer) {
-    _renderer = new ChartJSNodeCanvas({
-      width: WIDTH,
-      height: HEIGHT,
-      backgroundColour: "#ffffff",
-    });
-  }
-  return _renderer;
-}
 
 /**
  * Render a chart as a PNG buffer from query result data.
@@ -32,6 +22,8 @@ export async function renderChart(
     height?: number;
   }
 ): Promise<Buffer> {
+  const w = options?.width ?? WIDTH;
+  const h = options?.height ?? HEIGHT;
   const labels = data.map((row) => String(row[xColumn] ?? ""));
   const values = data.map((row) => Number(row[yColumn]) || 0);
 
@@ -89,6 +81,7 @@ export async function renderChart(
     },
     options: {
       responsive: false,
+      animation: false,
       plugins: {
         title: {
           display: !!options?.title,
@@ -109,6 +102,14 @@ export async function renderChart(
     },
   };
 
-  const renderer = getRenderer();
-  return await renderer.renderToBuffer(config);
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext("2d");
+
+  // Chart.js expects a canvas-like object
+  const chart = new Chart(ctx as unknown as CanvasRenderingContext2D, config);
+  chart.draw();
+  const buffer = Buffer.from(canvas.toBuffer("image/png"));
+  chart.destroy();
+
+  return buffer;
 }
