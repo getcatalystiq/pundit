@@ -1,6 +1,27 @@
-.aws-sam
-layers
-.playwright-mcp
+# Dependencies
+node_modules/
 
-admin-ui/.env.production
+# Next.js
+.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# OS
 .DS_Store
+
+# Vercel
+.vercel
+
+# Debug
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Legacy
+.aws-sam/
+.playwright-mcp/

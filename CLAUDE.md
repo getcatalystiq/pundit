@@ -4,101 +4,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pundit is a hosted MCP (Model Context Protocol) Server for database tools. It provides AI-powered database querying through OAuth 2.1 authentication and RAG (Retrieval-Augmented Generation) for semantic SQL generation.
+Pundit is a hosted MCP (Model Context Protocol) Server for AI-powered database querying. It provides RAG-based SQL generation, tenant database connections, and server-side chart rendering through OAuth 2.1 authentication.
 
 ## Architecture
 
 ```
-API Gateway (HTTP) → Lambda Functions → Aurora PostgreSQL (pgvector)
+Next.js 16 (App Router) → Vercel Serverless → Neon PostgreSQL (pgvector)
 
 Endpoints:
-  /.well-known/oauth-authorization-server, /oauth/*, /signup, /login → OAuth Lambda
-  /mcp → MCP Lambda (7 database tools)
-  /admin/* → Tenant Admin Lambda (OAuth auth)
-  /tenants/* → Platform Admin Lambda (IAM auth)
+  /.well-known/oauth-* → OAuth metadata
+  /api/oauth/*         → OAuth 2.1 (DCR, PKCE S256, tokens)
+  /api/signup, /api/login → Account creation / admin login
+  /mcp                 → MCP server (7 database tools)
+  /api/admin/*         → Admin dashboard API routes
+  /dashboard, /databases, /users → Admin UI pages
 
-Storage: Aurora Serverless v2, S3 (Admin UI), CloudFront (CDN)
+AI Services: OpenAI (embeddings), Anthropic Claude (SQL generation, doc generation)
 ```
 
 **Key directories:**
-- `src/` - Python Lambda handlers and modules
-- `src/oauth/` - OAuth 2.1 implementation (DCR, PKCE, JWT tokens)
-- `src/mcp/` - MCP protocol with Streamable HTTP transport
-- `src/tools/` - 7 MCP tools (search, generate, execute, visualize, save, list_db, context)
-- `src/db/` - Aurora Data API, tenant database connections, embeddings
-- `layers/` - Lambda layers (dependencies + altair/vl-convert for chart rendering)
-- `migrations/` - PostgreSQL schema with pgvector for RAG
-- `admin-ui/` - React 19 + Vite 6 + TypeScript frontend
+- `app/` — Next.js App Router: routes, layouts, pages
+- `app/api/` — Server-side API routes (OAuth, admin, cron)
+- `app/(admin)/` — Client-side admin UI pages
+- `lib/` — Shared modules (OAuth, DB, RAG, crypto, MCP tools)
+- `components/` — React components (admin layout, UI primitives)
+- `migrations/` — PostgreSQL schema with pgvector
+- `scripts/` — Migration runner
 
 ## Commands
 
+### Build
+```bash
+npx next build --turbopack     # Always use Turbopack for production builds
+```
+
+### Development
+```bash
+npm run dev                    # Next.js dev server
+npx tsx scripts/migrate.ts     # Run database migrations
+```
+
 ### Deploy
 ```bash
-./scripts/deploy.sh dev      # Deploy to dev
-./scripts/deploy.sh staging  # Deploy to staging
-./scripts/deploy.sh prod     # Deploy to prod
+npx vercel --prod              # Deploy to Vercel
 ```
 
-### Local Development
-```bash
-./scripts/local-dev.sh       # Start PostgreSQL + SAM Local API + Vite UI
-./scripts/local-dev.sh --db  # PostgreSQL only
-./scripts/local-dev.sh --api # SAM Local API only (port 3000)
-./scripts/local-dev.sh --ui  # Admin UI only (port 5173)
-./scripts/local-dev.sh --stop
-```
+## Key Constraints
+
+### Turbopack Production Build
+- `Response.json()` and `NextResponse.json()` FAIL silently in Turbopack production builds
+- Always use `jsonResponse()` from `lib/utils.ts` instead
+- Dev mode works fine with both — the issue is production-only
+
+### Lazy Initialization
+- Environment variables and secrets must NOT be validated at module level
+- Use lazy getters (e.g., `getEnv()`, `getJwtSecret()`) because env vars aren't available at build time
+- Module-level validation crashes `next build`
 
 ### Database
-```bash
-./scripts/migrate.sh         # Run migrations
-./scripts/db-tunnel.sh       # SSM tunnel to Aurora via Bastion
-```
-
-### Admin UI
-```bash
-cd admin-ui
-npm run dev                  # Vite dev server
-npm run build                # Production build
-npm run deploy               # Deploy to CloudFront/S3
-```
-
-### SAM Commands
-```bash
-sam build --use-container --parallel --cached
-sam local start-api --port 3000 --env-vars /tmp/pundit-sam-env.json
-sam local invoke McpFunction -e events/mcp-tools-list.json
-```
+- Use `sql` tagged template from `lib/db.ts` for queries (Neon serverless)
+- Use `getPool()` and `withTransaction()` for DDL and transactional operations
+- Tenant database connections use `pg` library (NOT Neon — they're external PostgreSQL)
 
 ## Key Files
 
-- `template.yaml` - AWS SAM infrastructure (Lambda, API Gateway, Aurora, VPC)
-- `samconfig.toml` - SAM CLI configuration per environment
-- `src/mcp/server.py` - MCP handler, session management, tool routing
-- `src/oauth/server.py` - OAuth 2.1 endpoints
-- `src/tools/__init__.py` - Tool registry and JSON schemas
-- `migrations/001_initial_schema.sql` - Database schema with pgvector RAG tables
+- `lib/db.ts` — Neon tagged template (lazy Proxy), Pool, withTransaction
+- `lib/oauth.ts` — OAuth 2.1 with PKCE S256, transactional code/token exchange
+- `lib/mcp-tools.ts` — 7 MCP tools with implementations
+- `lib/rag.ts` — RAG search with CTE query, boosting, dynamic limits
+- `lib/embeddings.ts` — OpenAI text-embedding-3-small via Vercel AI SDK
+- `lib/sql-generator.ts` — Claude SQL generation via generateObject
+- `lib/crypto.ts` — AES-256-GCM with HKDF key derivation and AAD
+- `lib/tenant-db.ts` — External database connections (read-only enforcement)
+- `lib/chart.ts` — chartjs-node-canvas PNG rendering
+- `lib/admin-auth.ts` — Bearer token validation for admin routes
+- `middleware.ts` — Security headers, CORS, MCP header exposure
+- `migrations/001_schema.sql` — Full schema with pgvector HNSW indexes
 
 ## Environment Variables
 
-- `AURORA_SECRET_ARN`, `AURORA_CLUSTER_ARN`, `AURORA_DATABASE` - Aurora config
-- `OAUTH_ISSUER` - API Gateway URL for OAuth
-- `JWT_SECRET` - JWT signing secret
-- `OPENAI_SECRET_ARN` - OpenAI API key (Secrets Manager)
-- `BEDROCK_REGION`, `BEDROCK_MODEL_ID` - Claude via Bedrock
+- `DATABASE_URL` — Neon PostgreSQL connection string
+- `JWT_SECRET` — JWT signing (min 32 chars)
+- `ENCRYPTION_KEY` — AES-256 master key (64 hex chars)
+- `OPENAI_API_KEY` — Embeddings (text-embedding-3-small)
+- `ANTHROPIC_API_KEY` — Claude (SQL gen, doc gen, analysis)
+- `NEXT_PUBLIC_URL` — Application URL
+- `CRON_SECRET` — Vercel cron authentication
 
 ## MCP Tools
 
-1. `search_database_context` - RAG search over schemas/docs/examples
-2. `generate_sql` - Natural language to SQL using RAG context
-3. `execute_sql` - Execute SELECT queries (max 100 rows)
-4. `visualize_data` - Altair charts rendered to PNG via vl-convert
-5. `save_sql_pattern` - Save question→SQL pairs for RAG training
-6. `save_business_context` - Save domain knowledge
-7. `list_databases` - List available tenant database connections
+1. `search_database_context` — RAG search with CTE query + table-mention boosting
+2. `generate_sql` — Claude SQL generation via generateObject with Zod schemas
+3. `execute_sql` — SELECT-only with LIMIT injection, audit logging, read-only enforcement
+4. `visualize_data` — Server-side chart rendering to PNG
+5. `save_sql_pattern` — Save Q&A pairs with near-duplicate detection (0.95 threshold)
+6. `save_business_context` — Save domain knowledge with duplicate detection
+7. `list_databases` — List tenant database connections
 
 ## Multi-tenant Design
 
-- Tenants (organizations) have users with roles and settings
-- Each tenant can configure multiple database connections (`tenant_databases`)
-- RAG training data is per-tenant: `db_ddl`, `db_documentation`, `db_question_sql`
-- OAuth clients and MCP sessions are tenant-scoped
+- Tenants have users with roles (owner/admin/member) and scopes (read/write/admin)
+- Each tenant configures database connections (`tenant_databases`) with encrypted credentials
+- 5 RAG training data types per database: DDL, documentation, examples, tool memory, text memory
+- All MCP tools are tenant-scoped via OAuth bearer tokens
+- AsyncLocalStorage for request-scoped tool context (query results shared between tools)
