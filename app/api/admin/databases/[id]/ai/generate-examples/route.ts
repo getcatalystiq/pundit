@@ -20,29 +20,22 @@ export async function POST(
     auto_save?: boolean;
   };
 
-  // Get DDL for this database
   const ddlRows = await sql`
     SELECT ddl FROM db_ddl
     WHERE tenant_id = ${auth.tenantId}::uuid AND database_id = ${id}::uuid
   `;
 
   if (ddlRows.length === 0) {
-    return jsonResponse(
-      { error: "No DDL found. Run pull-ddl first." },
-      400
-    );
+    return jsonResponse({ error: "No DDL found. Run pull-ddl first." }, 400);
   }
 
-  // Use combined DDL for context but limit query count
   const combinedDdl = ddlRows.map((r) => r.ddl).join("\n\n");
-  const queriesPerBatch = num_queries ?? 5;
 
   let queries: Array<{ question: string; sql: string }>;
   try {
-    queries = await generateSampleQueries(combinedDdl, queriesPerBatch);
+    queries = await generateSampleQueries(combinedDdl, num_queries ?? 5);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("AI generation failed:", message);
     return jsonResponse({ error: `AI generation failed: ${message}` }, 502);
   }
 
@@ -50,21 +43,19 @@ export async function POST(
     return jsonResponse({ examples: queries });
   }
 
-  // Save individually to avoid batch embedding timeout
-  let savedCount = 0;
-  for (const q of queries) {
-    try {
+  // Embed and save all examples in parallel
+  const saveResults = await Promise.allSettled(
+    queries.map(async (q) => {
       const embedding = await generateEmbedding(q.question);
       const embeddingStr = `[${embedding.join(",")}]`;
       await sql`
         INSERT INTO db_question_sql (tenant_id, database_id, question, sql, embedding)
         VALUES (${auth.tenantId}::uuid, ${id}::uuid, ${q.question}, ${q.sql}, ${embeddingStr}::vector)
       `;
-      savedCount++;
-    } catch (err) {
-      console.error("Failed to save example:", err instanceof Error ? err.message : err);
-    }
-  }
+    })
+  );
+
+  const savedCount = saveResults.filter((r) => r.status === "fulfilled").length;
 
   return jsonResponse({
     examples: queries,
