@@ -6,11 +6,8 @@ Thanks for your interest in contributing to Pundit!
 
 ### Prerequisites
 
-- Python 3.12+
 - Node.js 20+
-- Docker
-- AWS CLI configured
-- SAM CLI (`pip install aws-sam-cli`)
+- A [Neon](https://neon.tech) PostgreSQL database with pgvector enabled
 
 ### Local Development
 
@@ -19,22 +16,21 @@ Thanks for your interest in contributing to Pundit!
 git clone https://github.com/getcatalystiq/pundit.git
 cd pundit
 
-# Start local development (PostgreSQL + SAM API + Admin UI)
-./scripts/local-dev.sh
-
-# Or run components individually
-./scripts/local-dev.sh --db   # PostgreSQL only
-./scripts/local-dev.sh --api  # SAM Local API (port 3000)
-./scripts/local-dev.sh --ui   # Admin UI (port 5173)
-```
-
-### Admin UI Development
-
-```bash
-cd admin-ui
+# Install dependencies
 npm install
+
+# Copy environment template
+cp .env.example .env.local
+# Edit .env.local with your values
+
+# Run database migrations
+npm run migrate
+
+# Start dev server
 npm run dev
 ```
+
+The dev server runs at `http://localhost:3000` with Turbopack hot reload.
 
 ## Submitting Changes
 
@@ -43,7 +39,7 @@ npm run dev
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Make your changes
-4. Test locally with `./scripts/local-dev.sh`
+4. Run `npm run build` to verify the production build
 5. Commit with a clear message
 6. Push to your fork
 7. Open a Pull Request
@@ -57,20 +53,15 @@ Add OAuth token refresh endpoint
 
 - Implement refresh token rotation
 - Add token expiry validation
-- Update tests
 ```
 
 ### Code Style
 
-**Python:**
-- Follow PEP 8
-- Use type hints
-- Keep functions focused and small
-
-**TypeScript:**
 - Use TypeScript strict mode
-- Prefer functional components
-- Use existing UI components from `src/components/ui`
+- Prefer functional components for React
+- Use existing UI components from `components/ui`
+- Use `jsonResponse()` from `lib/utils.ts` instead of `Response.json()` (Turbopack requirement)
+- Use lazy getters for environment variables (never validate at module level)
 
 ## Reporting Issues
 
@@ -79,7 +70,7 @@ Add OAuth token refresh endpoint
 Include:
 - Steps to reproduce
 - Expected vs actual behavior
-- Environment details (AWS region, Python version)
+- Node.js version and OS
 - Relevant logs
 
 ### Feature Requests

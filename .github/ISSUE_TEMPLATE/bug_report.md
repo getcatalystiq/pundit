@@ -27,9 +27,8 @@ What actually happened.
 ## Environment
 
 - Pundit version/commit:
-- AWS region:
-- Python version:
-- Node version (for admin-ui):
+- Node.js version:
+- Browser (if admin UI):
 
 ## Logs
 
